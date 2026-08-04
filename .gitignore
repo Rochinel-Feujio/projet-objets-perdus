@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+documents.db
+documents.db-journal
+tests/sample_images/
