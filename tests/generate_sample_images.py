@@ -7,7 +7,6 @@ pour tester OCR + classification + extraction + validation.
 
 import os
 from PIL import Image, ImageDraw, ImageFont
-
 OUT_DIR = os.path.join(os.path.dirname(__file__), "sample_images")
 os.makedirs(OUT_DIR, exist_ok=True)
 

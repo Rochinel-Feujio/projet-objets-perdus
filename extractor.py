@@ -115,52 +115,125 @@ def _guess_name(raw_text: str):
     return None
 
 
-def extract_fields(doc_type: str, raw_text: str, normalized_text: str) -> dict:
+def _zone_line(zone_texts: dict, key: str):
+    """Première ligne exploitable du texte lu dans une zone donnée, ou None
+    si la zone n'a rien donné (zone absente pour ce type de document, ou OCR
+    n'ayant rien reconnu dedans)."""
+    if not zone_texts:
+        return None
+    raw = zone_texts.get(key)
+    if not raw:
+        return None
+    for line in raw.splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return None
+
+
+def _looks_like_name_value(text: str) -> bool:
+    """Filtre de plausibilité pour une valeur de zone censée contenir un nom
+    ou un prénom. Protège contre un mauvais recadrage de zone (zone estimée
+    non calibrée, ou photo au cadrage inhabituel) qui donnerait un fragment
+    de texte sans rapport (ex. un bout de la case "Taille" voisine) plutôt
+    que de risquer d'écraser une extraction correcte par du bruit."""
+    if not text or len(text) < 3:
+        return False
+    if "<" in text or _is_mrz_like(text):
+        return False  # zone mal cadrée ayant capté (une partie de) la ligne MRZ plutôt que le nom
+    letters = sum(1 for c in text if c.isalpha())
+    digits = sum(1 for c in text if c.isdigit())
+    if letters < 3 or digits > letters:
+        return False
+    return True
+
+
+def _zone_name(zone_texts: dict, key: str):
+    """Comme _zone_line, mais uniquement pour des champs nom/prénom : la
+    valeur doit ressembler à un nom pour être retenue, sinon on laisse
+    l'appelant se rabattre sur l'heuristique globale."""
+    value = _zone_line(zone_texts, key)
+    return value if value and _looks_like_name_value(value) else None
+
+
+def _zone_date(zone_texts: dict, key: str):
+    """Cherche une date dans le texte d'une zone précise — plus fiable que de
+    prendre la Nème date trouvée dans tout le texte de l'image, puisque la
+    zone ne contient (en principe) que ce champ-là."""
+    if not zone_texts:
+        return None
+    raw = zone_texts.get(key)
+    if not raw:
+        return None
+    found = _find_dates(raw)
+    return found[0] if found else None
+
+
+def extract_fields(doc_type: str, raw_text: str, normalized_text: str, zone_texts: dict = None) -> dict:
+    """Extrait les champs d'un document.
+
+    `zone_texts` (optionnel) : résultat de zones.read_zones(image, doc_type) —
+    texte OCR lu spécifiquement dans chaque zone connue de la mise en page de
+    ce type de document. Utilisé en priorité quand disponible et exploitable ;
+    on se rabat sinon sur les heuristiques appliquées au texte global (lecture
+    OCR de l'image entière), qui restent le comportement par défaut si aucune
+    zone n'est définie pour ce type ou si la lecture de zone est vide."""
+    zone_texts = zone_texts or {}
     dates = _find_dates(raw_text)
     fields = {"type_document": doc_type}
 
     if doc_type == "CNI":
-        fields["nom"] = _guess_name(raw_text)
-        fields["numero"] = _find_niu(raw_text)
-        fields["date_naissance"] = dates[0] if len(dates) > 0 else None
+        nom_zone = _zone_name(zone_texts, "nom")
+        prenom_zone = _zone_name(zone_texts, "prenom")
+        combined = " ".join(x for x in [nom_zone, prenom_zone] if x)
+        fields["nom"] = combined if combined else _guess_name(raw_text)
+        fields["numero"] = _find_niu(raw_text)  # NIU au verso : pas de zone dédiée sur le recto
+        fields["date_naissance"] = _zone_date(zone_texts, "date_naissance") or (dates[0] if dates else None)
         fields["date_expiration"] = dates[-1] if len(dates) > 1 else None
 
     elif doc_type == "RECEPISSE":
-        fields["nom"] = _guess_name(raw_text)
+        nom_zone = _zone_name(zone_texts, "nom")
+        fields["nom"] = nom_zone or _guess_name(raw_text)
         fields["numero_recepisse"] = _find_recepisse_number(raw_text)
         fields["date_delivrance"] = dates[0] if dates else None
 
     elif doc_type == "PASSEPORT":
-        # Sur la page biodonnées, nom et prénom sont souvent sur deux lignes
-        # séparées, précédées de leurs étiquettes ("1. Nom/Surname", puis
-        # "2. Prénom/s Given name/s") — on tente d'abord cette approche,
-        # plus fiable ici que l'heuristique générique à une seule ligne.
-        surname = _find_label_value(raw_text, _SURNAME_LABELS)
-        given_name = _find_label_value(raw_text, _GIVENNAME_LABELS)
-        combined = " ".join(x for x in [surname, given_name] if x)
+        nom_zone = _zone_name(zone_texts, "nom")
+        prenom_zone = _zone_name(zone_texts, "prenom")
+        combined = " ".join(x for x in [nom_zone, prenom_zone] if x)
+        if not combined:
+            # Repli : étiquettes bilingues ("1. Nom/Surname" puis valeur sur
+            # la ligne suivante) recherchées dans le texte global.
+            surname = _find_label_value(raw_text, _SURNAME_LABELS)
+            given_name = _find_label_value(raw_text, _GIVENNAME_LABELS)
+            combined = " ".join(x for x in [surname, given_name] if x)
         fields["nom"] = combined if combined else _guess_name(raw_text)
-        fields["date_naissance"] = dates[0] if len(dates) > 0 else None
-        fields["date_expiration"] = dates[-1] if len(dates) > 1 else None
-        mrz_lines = _find_mrz_lines(raw_text)
+        fields["date_naissance"] = _zone_date(zone_texts, "date_naissance") or (dates[0] if dates else None)
+        fields["date_expiration"] = _zone_date(zone_texts, "date_expiration") or (dates[-1] if len(dates) > 1 else None)
+        mrz_lines = _find_mrz_lines(zone_texts.get("mrz", "")) or _find_mrz_lines(raw_text)
         fields["mrz"] = " ".join(mrz_lines) if mrz_lines else None
 
     elif doc_type == "ACTE_NAISSANCE":
-        fields["nom"] = _guess_name(raw_text)
-        fields["date_naissance"] = dates[0] if dates else None
+        nom_zone = _zone_name(zone_texts, "nom")
+        fields["nom"] = nom_zone or _guess_name(raw_text)
+        fields["date_naissance"] = _zone_date(zone_texts, "date_naissance") or (dates[0] if dates else None)
         lieu_match = re.search(r"(?:a|à)\s+([A-ZÀ-Ü][a-zà-ü\-]+)", raw_text)
         fields["lieu_naissance"] = lieu_match.group(1) if lieu_match else None
 
     elif doc_type == "DIPLOME":
-        fields["nom"] = _guess_name(raw_text)
+        nom_zone = _zone_name(zone_texts, "nom")
+        fields["nom"] = nom_zone or _guess_name(raw_text)
         fields["date_delivrance"] = dates[0] if dates else None
         matricule_match = re.search(r"matricule\s*[:\-]?\s*([A-Z0-9\-]+)", normalized_text)
         fields["numero_matricule"] = matricule_match.group(1).upper() if matricule_match else None
 
     elif doc_type == "PERMIS":
-        fields["nom"] = _guess_name(raw_text)
-        fields["date_naissance"] = dates[0] if len(dates) > 0 else None
+        nom_zone = _zone_name(zone_texts, "nom")
+        fields["nom"] = nom_zone or _guess_name(raw_text)
+        fields["date_naissance"] = _zone_date(zone_texts, "date_naissance") or (dates[0] if dates else None)
         fields["date_delivrance"] = dates[-1] if len(dates) > 1 else None
-        categories = re.findall(r"\b[ABCDE]1?\b", raw_text.upper())
+        categories_source = zone_texts.get("categories", raw_text)
+        categories = re.findall(r"\b[ABCDE]1?\b", categories_source.upper())
         fields["categories"] = sorted(set(categories)) if categories else None
 
     else:
