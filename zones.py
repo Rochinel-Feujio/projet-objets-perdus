@@ -11,13 +11,19 @@ la hauteur de l'image APRÈS correction de perspective (voir preprocessing.py)
 — donc indépendantes de la résolution réelle de la photo envoyée.
 
 État de calibration des zones :
-  - CNI et Passeport : calibrées à partir de vraies photos de test envoyées
-    pendant le développement.
+  - CNI (format actuel), CNI_ANCIEN et Passeport : calibrées à partir de
+    vraies photos de test envoyées pendant le développement.
   - Récépissé, Acte de naissance, Diplôme, Permis : estimées à partir du
     document de référence "Critères de différenciation" (aucune vraie photo
     testée pour ces types pour l'instant) — à corriger dès que des exemples
     réels seront disponibles, en ajustant simplement les 4 chiffres de la zone
     concernée ci-dessous.
+
+À propos de CNI_ANCIEN : le classifieur (classifier.py) ne distingue pas
+l'ancienne carte plastifiée de la carte biométrique actuelle — les deux sont
+classées "CNI". read_zones() essaie donc automatiquement les deux mises en
+page pour ce type de document (voir plus bas) et garde, champ par champ, la
+première lecture non vide.
 
 Ce module ne remplace jamais l'extraction existante (extractor.py) : si une
 zone ne donne rien d'exploitable, l'appelant se rabat sur l'ancienne méthode
@@ -37,6 +43,18 @@ FIELD_ZONES = {
         "date_naissance": (0.28, 0.41, 0.62, 0.52),
         "lieu_naissance": (0.28, 0.52, 0.82, 0.63),
         "sexe_taille": (0.28, 0.63, 0.82, 0.73),
+    },
+    # Ancienne carte plastifiée (photo principale à droite, puce et petite
+    # photo à gauche) — calibrée sur une vraie photo envoyée pendant le
+    # développement, mais uniquement par estimation visuelle des proportions
+    # (pas encore vérifiée par une vraie passe OCR comme "CNI" et "PASSEPORT").
+    # À affiner si les lectures réelles s'avèrent décalées.
+    "CNI_ANCIEN": {
+        "nom": (0.24, 0.24, 0.62, 0.31),
+        "prenom": (0.24, 0.37, 0.62, 0.43),
+        "date_naissance": (0.24, 0.485, 0.55, 0.545),
+        "lieu_naissance": (0.24, 0.575, 0.62, 0.63),
+        "sexe_taille": (0.24, 0.665, 0.62, 0.72),
     },
     "PASSEPORT": {
         "nom": (0.05, 0.27, 0.62, 0.37),
@@ -79,13 +97,7 @@ def _crop_zone(image, box):
     return cv2.resize(crop, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
 
 
-def read_zones(image, doc_type: str, lang: str = "fra") -> dict:
-    """Lit l'OCR séparément sur chaque zone connue pour ce type de document.
-
-    Retourne {nom_du_champ: texte_brut_lu}. Types de document sans zones
-    définies -> dict vide (l'appelant se rabat alors entièrement sur la
-    lecture globale existante)."""
-    zones = FIELD_ZONES.get(doc_type, {})
+def _read_zones_for_layout(image, zones: dict, lang: str) -> dict:
     results = {}
     for field_name, box in zones.items():
         crop = _crop_zone(image, box)
@@ -94,6 +106,35 @@ def read_zones(image, doc_type: str, lang: str = "fra") -> dict:
         text = extract_text(crop, lang=lang).strip()
         if text:
             results[field_name] = text
+    return results
+
+
+# Types de document pour lesquels plusieurs mises en page existent : on lit
+# la mise en page principale, puis on complète avec la ou les mises en page
+# alternatives pour tout champ resté vide.
+_LAYOUT_VARIANTS = {
+    "CNI": ["CNI", "CNI_ANCIEN"],
+}
+
+
+def read_zones(image, doc_type: str, lang: str = "fra") -> dict:
+    """Lit l'OCR séparément sur chaque zone connue pour ce type de document.
+
+    Pour les types ayant plusieurs mises en page connues (ex. CNI actuelle vs
+    ancienne carte plastifiée, voir _LAYOUT_VARIANTS), essaie chaque mise en
+    page et garde, champ par champ, la première lecture non vide — le
+    classifieur ne distinguant pas les variantes d'un même type de document.
+
+    Retourne {nom_du_champ: texte_brut_lu}. Types de document sans zones
+    définies -> dict vide (l'appelant se rabat alors entièrement sur la
+    lecture globale existante)."""
+    layouts = _LAYOUT_VARIANTS.get(doc_type, [doc_type])
+    results = {}
+    for layout in layouts:
+        zones = FIELD_ZONES.get(layout, {})
+        layout_results = _read_zones_for_layout(image, zones, lang)
+        for field_name, text in layout_results.items():
+            results.setdefault(field_name, text)
     return results
 
 
