@@ -7,9 +7,16 @@ résultat. Déployé sur Streamlit Community Cloud — voir README.md.
 import os
 import tempfile
 
+import cv2
 import streamlit as st
 
 from main import process_document
+
+
+def cv2_to_rgb(image):
+    """Convertit une image OpenCV (BGR) en RGB pour l'affichage Streamlit."""
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
 
 st.set_page_config(
     page_title="Détection de documents — Cameroun",
@@ -224,14 +231,24 @@ if uploaded_file is not None:
     with st.spinner("Analyse en cours..."):
         try:
             if show_debug:
-                from preprocessing import load_and_clean, get_aspect_ratio
+                from preprocessing import load_and_clean, get_aspect_ratio, is_blurry
                 from ocr import extract_text
 
-                image, _ = load_and_clean(tmp_path)
-                ratio = get_aspect_ratio(image)
-                raw = extract_text(tmp_path)
-                with st.expander("Texte brut OCR (debug)", expanded=True):
-                    st.text(f"Ratio largeur/hauteur : {ratio:.2f}")
+                corrected_image, _ = load_and_clean(tmp_path)
+                ratio = get_aspect_ratio(corrected_image)
+                blurry, sharpness = is_blurry(corrected_image)
+                # OCR sur l'image déjà corrigée (perspective/redressement), pour
+                # afficher exactement ce que le pipeline utilise réellement.
+                raw = extract_text(corrected_image)
+                with st.expander("Détails techniques (debug)", expanded=True):
+                    st.text(f"Ratio largeur/hauteur (après correction) : {ratio:.2f}")
+                    st.text(f"Netteté (variance Laplacien) : {sharpness:.1f} {'-> FLOUE' if blurry else '-> nette'}")
+                    st.image(
+                        cv2_to_rgb(corrected_image),
+                        caption="Image après correction de perspective / redressement",
+                        use_container_width=True,
+                    )
+                    st.text("Texte brut lu par l'OCR :")
                     st.text(raw if raw.strip() else "(rien lu par l'OCR)")
 
             result = process_document(tmp_path, debug=False)
