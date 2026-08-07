@@ -33,7 +33,14 @@ résultat ne peut pas être pire qu'avant — seulement potentiellement meilleur
 
 import cv2
 
-from ocr import extract_text
+from ocr import extract_text, DEFAULT_LANG
+
+# Mode de segmentation Tesseract par champ : la plupart des zones ne
+# contiennent qu'une seule ligne de valeur ("7"), mais la MRZ du passeport
+# tient sur 2 lignes de longueur fixe ("6" = bloc de texte uniforme, garde
+# les retours à la ligne au lieu de tout coller sur une seule ligne).
+_ZONE_PSM = {"mrz": "6"}
+_DEFAULT_ZONE_PSM = "7"
 
 # (x_min, y_min, x_max, y_max) en fractions de l'image corrigée.
 FIELD_ZONES = {
@@ -103,7 +110,10 @@ def _read_zones_for_layout(image, zones: dict, lang: str) -> dict:
         crop = _crop_zone(image, box)
         if crop is None:
             continue
-        text = extract_text(crop, lang=lang).strip()
+        psm = _ZONE_PSM.get(field_name, _DEFAULT_ZONE_PSM)
+        # upscale=False : _crop_zone() a déjà agrandi x2 (voir plus haut) —
+        # pas besoin (et pas intérêt) de remettre une couche d'agrandissement.
+        text = extract_text(crop, lang=lang, psm=psm, upscale=False).strip()
         if text:
             results[field_name] = text
     return results
@@ -117,7 +127,7 @@ _LAYOUT_VARIANTS = {
 }
 
 
-def read_zones(image, doc_type: str, lang: str = "fra") -> dict:
+def read_zones(image, doc_type: str, lang: str = DEFAULT_LANG) -> dict:
     """Lit l'OCR séparément sur chaque zone connue pour ce type de document.
 
     Pour les types ayant plusieurs mises en page connues (ex. CNI actuelle vs
@@ -132,7 +142,13 @@ def read_zones(image, doc_type: str, lang: str = "fra") -> dict:
     results = {}
     for layout in layouts:
         zones = FIELD_ZONES.get(layout, {})
-        layout_results = _read_zones_for_layout(image, zones, lang)
+        # Ne relit que les champs encore manquants : si la première mise en
+        # page a déjà tout donné, on n'a pas besoin (et pas intérêt, pour la
+        # vitesse) de relire les zones des mises en page alternatives.
+        missing_zones = {k: v for k, v in zones.items() if k not in results}
+        if not missing_zones:
+            break
+        layout_results = _read_zones_for_layout(image, missing_zones, lang)
         for field_name, text in layout_results.items():
             results.setdefault(field_name, text)
     return results
