@@ -67,6 +67,12 @@ EMBLEM_SVG = """
 # navigateurs, contrairement à une simple concaténation brute).
 EMBLEM_DATA_URI = "data:image/svg+xml," + urllib.parse.quote(EMBLEM_SVG)
 
+# Version aplatie sur une seule ligne (pas de retours à la ligne) pour
+# l'insertion directe dans un bloc HTML indenté : un SVG multi-lignes non
+# indenté au même niveau que le reste casse le parsing Markdown de Streamlit
+# et fait retomber tout le bloc en texte brut au lieu de HTML.
+EMBLEM_SVG_INLINE = " ".join(line.strip() for line in EMBLEM_SVG.strip().splitlines())
+
 st.markdown(
     f"""
     <style>
@@ -281,7 +287,7 @@ st.markdown(
     f"""
     <div class="cd-header">
         <div class="cd-eyebrow">République du Cameroun</div>
-        {EMBLEM_SVG.replace('<svg ', '<svg class="cd-emblem" ')}
+        {EMBLEM_SVG_INLINE.replace('<svg ', '<svg class="cd-emblem" ')}
         <h1>Détection automatique des documents <span class="cd-star">★</span></h1>
         <p>Système de gestion des objets perdus et retrouvés — dépose une photo de CNI,
         récépissé, passeport, acte de naissance, diplôme ou permis de conduire :
