@@ -156,6 +156,51 @@ def _zone_name(zone_texts: dict, key: str):
     return value if value and _looks_like_name_value(value) else None
 
 
+def _parse_mrz_name(mrz_line: str):
+    """Repère nom et prénom dans une ligne 1 de MRZ (format "P<CMRNOM<<PRENOM
+    <<<<...<"), même très bruitée par l'OCR.
+
+    Principe : après le code pays (CMR — toléré CHR/CMP/CNR... au cas où l'OCR
+    déforme une lettre), le premier "mot" d'au moins 4 lettres est le nom, le
+    second est le prénom. On ne cherche pas les caractères '<' exacts (l'OCR
+    les lit très souvent comme autre chose : K, O, des espaces...) — on se
+    base uniquement sur les suites de lettres, qui elles restent fiables."""
+    tokens = re.findall(r"[A-Z]{4,}", mrz_line.upper())
+    for i, tok in enumerate(tokens):
+        match = re.search(r"C[MHN][RP]", tok)
+        if not match:
+            continue
+        surname = tok[match.end():]
+        given_name = tokens[i + 1] if i + 1 < len(tokens) else None
+        if surname:
+            return surname, given_name
+    return None, None
+
+
+def _parse_mrz_passport_number(mrz_text: str):
+    """Le numéro de passeport a la forme 1-2 lettres + 6-8 chiffres (ex.
+    "AB156755"), au tout début de la 2e ligne de la MRZ. On cherche ce motif
+    n'importe où dans le texte MRZ plutôt qu'en imposant "en tout début de
+    ligne" : l'OCR ne préserve pas toujours proprement le retour à la ligne
+    entre les deux lignes de la MRZ (parfois collées, séparées par un simple
+    espace) — le motif lettres+chiffres reste lui identifiable dans tous les cas."""
+    match = re.search(r"\b[A-Z]{1,2}[0-9]{6,8}\b", mrz_text.upper())
+    return match.group(0) if match else None
+
+
+def _extract_from_mrz(mrz_lines: list):
+    """Dernier recours pour nom/prénom/numéro sur un passeport : si ni la
+    lecture par zones ni les étiquettes bilingues n'ont rien donné d'exploitable
+    en haut de page, on les retrouve dans la MRZ — conçue justement pour rester
+    lisible même sur un OCR imparfait. On travaille sur le texte MRZ fusionné
+    (pas ligne par ligne) car les deux lignes de la MRZ ne sont pas toujours
+    proprement séparées par l'OCR."""
+    full_text = " ".join(mrz_lines)
+    surname, given_name = _parse_mrz_name(full_text)
+    passport_number = _parse_mrz_passport_number(full_text)
+    return surname, given_name, passport_number
+
+
 def _zone_date(zone_texts: dict, key: str):
     """Cherche une date dans le texte d'une zone précise — plus fiable que de
     prendre la Nème date trouvée dans tout le texte de l'image, puisque la
@@ -198,19 +243,28 @@ def extract_fields(doc_type: str, raw_text: str, normalized_text: str, zone_text
         fields["date_delivrance"] = dates[0] if dates else None
 
     elif doc_type == "PASSEPORT":
+        mrz_lines = _find_mrz_lines(zone_texts.get("mrz", "")) or _find_mrz_lines(raw_text)
+        mrz_surname, mrz_given_name, mrz_passport_number = (
+            _extract_from_mrz(mrz_lines) if mrz_lines else (None, None, None)
+        )
+
         nom_zone = _zone_name(zone_texts, "nom")
         prenom_zone = _zone_name(zone_texts, "prenom")
         combined = " ".join(x for x in [nom_zone, prenom_zone] if x)
         if not combined:
-            # Repli : étiquettes bilingues ("1. Nom/Surname" puis valeur sur
+            # Repli 1 : étiquettes bilingues ("1. Nom/Surname" puis valeur sur
             # la ligne suivante) recherchées dans le texte global.
             surname = _find_label_value(raw_text, _SURNAME_LABELS)
             given_name = _find_label_value(raw_text, _GIVENNAME_LABELS)
             combined = " ".join(x for x in [surname, given_name] if x)
+        if not combined and (mrz_surname or mrz_given_name):
+            # Repli 2 : nom/prénom pas identifiés en haut de page -> on les
+            # retrouve dans la MRZ (voir _extract_from_mrz).
+            combined = " ".join(x for x in [mrz_surname, mrz_given_name] if x)
         fields["nom"] = combined if combined else _guess_name(raw_text)
+        fields["numero"] = mrz_passport_number
         fields["date_naissance"] = _zone_date(zone_texts, "date_naissance") or (dates[0] if dates else None)
         fields["date_expiration"] = _zone_date(zone_texts, "date_expiration") or (dates[-1] if len(dates) > 1 else None)
-        mrz_lines = _find_mrz_lines(zone_texts.get("mrz", "")) or _find_mrz_lines(raw_text)
         fields["mrz"] = " ".join(mrz_lines) if mrz_lines else None
 
     elif doc_type == "ACTE_NAISSANCE":
