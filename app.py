@@ -364,30 +364,31 @@ LABEL_TO_CODE = {label: code for code, label in DOC_LABELS.items()}
 
 
 def render_header(title: str, subtitle: str = "", compact: bool = False):
+    # Important : tout tenir sur UNE SEULE ligne (pas de f-string multi-lignes
+    # indentée). Un bloc HTML markdown multi-lignes indenté peut, selon son
+    # contenu (ex. une ligne vide quand `subtitle` est vide), se faire couper
+    # par le parseur Markdown de Streamlit en cours de route et retomber en
+    # bloc de code littéral au lieu de HTML rendu — voir EMBLEM_SVG_INLINE
+    # ci-dessus pour le même problème déjà rencontré sur le SVG.
     compact_class = " cd-header-compact" if compact else ""
     subtitle_html = f"<p>{subtitle}</p>" if subtitle else ""
-    st.markdown(
-        f"""
-        <div class="cd-header{compact_class}">
-            <div class="cd-eyebrow">République du Cameroun</div>
-            {EMBLEM_SVG_INLINE.replace('<svg ', '<svg class="cd-emblem" ')}
-            <h1>{title} <span class="cd-star">★</span></h1>
-            {subtitle_html}
-            <div class="cd-motto">Paix &nbsp;•&nbsp; Travail &nbsp;•&nbsp; Patrie</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    emblem_html = EMBLEM_SVG_INLINE.replace('<svg ', '<svg class="cd-emblem" ')
+    header_html = (
+        f'<div class="cd-header{compact_class}">'
+        f'<div class="cd-eyebrow">République du Cameroun</div>'
+        f'{emblem_html}'
+        f'<h1>{title} <span class="cd-star">★</span></h1>'
+        f'{subtitle_html}'
+        f'<div class="cd-motto">Paix &nbsp;•&nbsp; Travail &nbsp;•&nbsp; Patrie</div>'
+        f'</div>'
     )
+    st.markdown(header_html, unsafe_allow_html=True)
 
 
 def render_footer():
     st.markdown(
-        """
-        <div class="cd-footer">
-            Findici — Prototype de test — l'extraction dépend fortement de la qualité de la photo
-            (cadrage, lumière, netteté, absence de reflets).
-        </div>
-        """,
+        '<div class="cd-footer">Findici — Prototype de test — l\'extraction dépend '
+        "fortement de la qualité de la photo (cadrage, lumière, netteté, absence de reflets).</div>",
         unsafe_allow_html=True,
     )
 
@@ -531,15 +532,10 @@ def screen_accueil():
         col_info, col_btn = st.columns([3, 1])
         with col_info:
             st.markdown(
-                f"""
-                <div class="cd-feed-item" style="border-bottom:none; padding-bottom:0;">
-                    <div>
-                        <div class="cd-feed-title">{icon} {nom}</div>
-                        <div class="cd-feed-sub">Retrouvé le {doc['created_at']}</div>
-                        <span class="cd-chip">{label}</span>
-                    </div>
-                </div>
-                """,
+                f'<div class="cd-feed-item" style="border-bottom:none; padding-bottom:0;">'
+                f'<div><div class="cd-feed-title">{icon} {nom}</div>'
+                f'<div class="cd-feed-sub">Retrouvé le {doc["created_at"]}</div>'
+                f'<span class="cd-chip">{label}</span></div></div>',
                 unsafe_allow_html=True,
             )
         with col_btn:
@@ -754,10 +750,8 @@ def screen_declarer_trouve():
                     icon = DOC_ICONS.get(result["type_document"], "📄")
                     st.markdown('<div class="cd-card">', unsafe_allow_html=True)
                     st.markdown(
-                        f"""
-                        <div class="cd-result-badge">{icon} {result['type_document']}</div>
-                        <span class="cd-confidence">Confiance : {result['confidence']:.0%}</span>
-                        """,
+                        f'<div class="cd-result-badge">{icon} {result["type_document"]}</div>'
+                        f'<span class="cd-confidence">Confiance : {result["confidence"]:.0%}</span>',
                         unsafe_allow_html=True,
                     )
                     rows_html = ""
@@ -953,14 +947,11 @@ def screen_mes():
             nom = decl["fields"].get("nom") or "Nom non renseigné"
             statut = "En attente" if decl["statut"] == "en_attente" else decl["statut"]
             st.markdown(
-                f"""
-                <div class="cd-card">
-                    <div class="cd-feed-title">{icon} {nom}</div>
-                    <div class="cd-feed-sub">Déclaré le {decl['created_at']} — Lieu : {decl.get('lieu_perte') or 'non renseigné'}</div>
-                    <span class="cd-chip">{label}</span>
-                    <span class="cd-chip">{statut}</span>
-                </div>
-                """,
+                f'<div class="cd-card"><div class="cd-feed-title">{icon} {nom}</div>'
+                f'<div class="cd-feed-sub">Déclaré le {decl["created_at"]} — '
+                f'Lieu : {decl.get("lieu_perte") or "non renseigné"}</div>'
+                f'<span class="cd-chip">{label}</span>'
+                f'<span class="cd-chip">{statut}</span></div>',
                 unsafe_allow_html=True,
             )
 
@@ -979,13 +970,10 @@ def screen_mes():
             col_info, col_btn = st.columns([3, 1])
             with col_info:
                 st.markdown(
-                    f"""
-                    <div class="cd-card" style="margin-bottom:8px;">
-                        <div class="cd-feed-title">{icon} {nom}</div>
-                        <div class="cd-feed-sub">Retrouvé le {doc['created_at']}</div>
-                        <span class="cd-chip">{label}</span>
-                    </div>
-                    """,
+                    f'<div class="cd-card" style="margin-bottom:8px;">'
+                    f'<div class="cd-feed-title">{icon} {nom}</div>'
+                    f'<div class="cd-feed-sub">Retrouvé le {doc["created_at"]}</div>'
+                    f'<span class="cd-chip">{label}</span></div>',
                     unsafe_allow_html=True,
                 )
             with col_btn:
@@ -1006,11 +994,10 @@ def screen_profil():
     user = st.session_state.user
     st.markdown('<div class="cd-card">', unsafe_allow_html=True)
     st.markdown(
-        f"""
-        <div class="cd-profile-row"><span>Nom</span><strong>{user['nom']}</strong></div>
-        <div class="cd-profile-row"><span>Email</span><strong>{user['email']}</strong></div>
-        <div class="cd-profile-row"><span>Téléphone</span><strong>{user.get('telephone') or 'non renseigné'}</strong></div>
-        """,
+        f'<div class="cd-profile-row"><span>Nom</span><strong>{user["nom"]}</strong></div>'
+        f'<div class="cd-profile-row"><span>Email</span><strong>{user["email"]}</strong></div>'
+        f'<div class="cd-profile-row"><span>Téléphone</span>'
+        f'<strong>{user.get("telephone") or "non renseigné"}</strong></div>',
         unsafe_allow_html=True,
     )
     st.markdown("</div>", unsafe_allow_html=True)
