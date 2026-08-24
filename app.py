@@ -12,6 +12,8 @@ import cv2
 import streamlit as st
 
 from main import process_document
+from config import DOCUMENT_TYPES, DECLARATION_FIELDS, FIELD_LABELS
+from storage import save_declaration, find_matching_documents, find_matching_declarations
 
 
 def cv2_to_rgb(image):
@@ -307,104 +309,209 @@ DOC_ICONS = {
     "Permis de conduire": "🚗",
 }
 
-# ---------------------------------------------------------------------------
-# Zone de dépôt
-# ---------------------------------------------------------------------------
-st.markdown('<div class="cd-card">', unsafe_allow_html=True)
-st.markdown("##### 📤 Choisis une photo de document")
-uploaded_file = st.file_uploader(
-    "Formats acceptés : JPG, PNG",
-    type=["jpg", "jpeg", "png"],
-    label_visibility="collapsed",
-)
-show_debug = st.checkbox("Afficher le texte brut lu par l'OCR (mode debug)", value=False)
-st.markdown("</div>", unsafe_allow_html=True)
+tab_trouve, tab_perdu = st.tabs(["🔍 J'ai retrouvé un document", "📢 J'ai perdu un document"])
 
 # ---------------------------------------------------------------------------
-# Traitement + résultats
+# Onglet 1 : dépôt d'une photo (document retrouvé) — flux existant.
 # ---------------------------------------------------------------------------
-if uploaded_file is not None:
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.image(uploaded_file, caption="Photo envoyée", use_container_width=True)
+with tab_trouve:
+    st.markdown('<div class="cd-card">', unsafe_allow_html=True)
+    st.markdown("##### 📤 Choisis une photo de document")
+    uploaded_file = st.file_uploader(
+        "Formats acceptés : JPG, PNG",
+        type=["jpg", "jpeg", "png"],
+        label_visibility="collapsed",
+    )
+    show_debug = st.checkbox("Afficher le texte brut lu par l'OCR (mode debug)", value=False)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-        tmp.write(uploaded_file.getbuffer())
-        tmp_path = tmp.name
+    if uploaded_file is not None:
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.image(uploaded_file, caption="Photo envoyée", use_container_width=True)
 
-    result = None
-    with st.spinner("Analyse en cours..."):
-        try:
-            if show_debug:
-                from preprocessing import load_and_clean, get_aspect_ratio, is_blurry
-                from ocr import extract_text
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            tmp.write(uploaded_file.getbuffer())
+            tmp_path = tmp.name
 
-                corrected_image, _ = load_and_clean(tmp_path)
-                ratio = get_aspect_ratio(corrected_image)
-                blurry, sharpness = is_blurry(corrected_image)
-                # OCR sur l'image déjà corrigée (perspective/redressement), pour
-                # afficher exactement ce que le pipeline utilise réellement.
-                raw = extract_text(corrected_image)
-                with st.expander("Détails techniques (debug)", expanded=True):
-                    st.text(f"Ratio largeur/hauteur (après correction) : {ratio:.2f}")
-                    st.text(f"Netteté (variance Laplacien) : {sharpness:.1f} {'-> FLOUE' if blurry else '-> nette'}")
-                    st.image(
-                        cv2_to_rgb(corrected_image),
-                        caption="Image après correction de perspective / redressement",
-                        use_container_width=True,
+        result = None
+        with st.spinner("Analyse en cours..."):
+            try:
+                if show_debug:
+                    from preprocessing import load_and_clean, get_aspect_ratio, is_blurry
+                    from ocr import extract_text
+
+                    corrected_image, _ = load_and_clean(tmp_path)
+                    ratio = get_aspect_ratio(corrected_image)
+                    blurry, sharpness = is_blurry(corrected_image)
+                    # OCR sur l'image déjà corrigée (perspective/redressement), pour
+                    # afficher exactement ce que le pipeline utilise réellement.
+                    raw = extract_text(corrected_image)
+                    with st.expander("Détails techniques (debug)", expanded=True):
+                        st.text(f"Ratio largeur/hauteur (après correction) : {ratio:.2f}")
+                        st.text(f"Netteté (variance Laplacien) : {sharpness:.1f} {'-> FLOUE' if blurry else '-> nette'}")
+                        st.image(
+                            cv2_to_rgb(corrected_image),
+                            caption="Image après correction de perspective / redressement",
+                            use_container_width=True,
+                        )
+                        st.text("Texte brut lu par l'OCR :")
+                        st.text(raw if raw.strip() else "(rien lu par l'OCR)")
+
+                result = process_document(tmp_path, debug=False)
+            except Exception as e:
+                st.markdown(f'<div class="cd-alert">Erreur pendant le traitement : {e}</div>', unsafe_allow_html=True)
+            finally:
+                os.unlink(tmp_path)
+
+        if result:
+            with col2:
+                icon = DOC_ICONS.get(result["type_document"], "📄")
+                st.markdown('<div class="cd-card">', unsafe_allow_html=True)
+                st.markdown(
+                    f"""
+                    <div class="cd-result-badge">{icon} {result['type_document']}</div>
+                    <span class="cd-confidence">Confiance : {result['confidence']:.0%}</span>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                rows_html = ""
+                for key, value in result["champs"].items():
+                    if key == "type_document":
+                        continue
+                    if value in (None, "", []):
+                        value_html = '<span class="cd-field-missing">non détecté</span>'
+                    else:
+                        value_html = str(value)
+                    rows_html += (
+                        f'<div class="cd-field-row">'
+                        f'<span class="cd-field-label">{key.replace("_", " ").capitalize()}</span>'
+                        f'<span class="cd-field-value">{value_html}</span>'
+                        f"</div>"
                     )
-                    st.text("Texte brut lu par l'OCR :")
-                    st.text(raw if raw.strip() else "(rien lu par l'OCR)")
+                st.markdown(f'<div style="margin-top:14px;">{rows_html}</div>', unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
 
-            result = process_document(tmp_path, debug=False)
-        except Exception as e:
-            st.markdown(f'<div class="cd-alert">Erreur pendant le traitement : {e}</div>', unsafe_allow_html=True)
-        finally:
-            os.unlink(tmp_path)
+            if result["alertes"]:
+                for alert in result["alertes"]:
+                    st.markdown(f'<div class="cd-alert">⚠️ {alert}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="cd-success">✅ Informations enregistrées avec succès.</div>', unsafe_allow_html=True)
 
-    if result:
-        with col2:
-            icon = DOC_ICONS.get(result["type_document"], "📄")
-            st.markdown('<div class="cd-card">', unsafe_allow_html=True)
+            # Rapprochement automatique : ce document retrouvé correspond-il à
+            # une déclaration de perte déjà enregistrée (onglet "J'ai perdu un
+            # document") ? On compare sur le type de document + numéro/nom.
+            declaration_matches = find_matching_declarations(
+                result["champs"]["type_document"], result["champs"]
+            )
+            if declaration_matches:
+                st.markdown("##### 📢 Correspond à une déclaration de perte")
+                for match in declaration_matches:
+                    contact = match["contact_telephone"] or match["contact_email"] or "contact non renseigné"
+                    st.markdown(
+                        f'<div class="cd-success">'
+                        f"Déclaration n°{match['id']} du {match['created_at']} "
+                        f"(déclarant·e : {match['contact_nom'] or 'inconnu'}, "
+                        f"correspondance sur « {match['matched_on']} ») — "
+                        f"à recontacter : <strong>{contact}</strong>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+            with st.expander("Voir le JSON structuré"):
+                st.json(result["champs"])
+    else:
+        st.markdown(
+            '<div class="cd-card" style="text-align:center; color:#8A887F;">'
+            "En attente d'une photo…</div>",
+            unsafe_allow_html=True,
+        )
+
+# ---------------------------------------------------------------------------
+# Onglet 2 : déclaration de perte — pas de photo (le document est perdu),
+# juste ce que la personne connaît, pour être recontactée s'il est retrouvé.
+# ---------------------------------------------------------------------------
+with tab_perdu:
+    st.markdown('<div class="cd-card">', unsafe_allow_html=True)
+    st.markdown("##### 📢 Déclarer un document perdu")
+    st.markdown(
+        "Renseignez ce que vous savez sur le document perdu : si un document "
+        "correspondant est ensuite retrouvé et scanné (onglet précédent), vous "
+        "serez identifié·e automatiquement."
+    )
+
+    doc_labels = {code: info["label"] for code, info in DOCUMENT_TYPES.items()}
+    label_to_code = {label: code for code, label in doc_labels.items()}
+    chosen_label = st.selectbox("Type de document perdu", list(doc_labels.values()), key="decl_doc_type")
+    doc_code = label_to_code[chosen_label]
+
+    st.markdown("**Informations connues sur le document** _(au moins le nom, idéalement aussi un numéro)_")
+    declared_fields = {}
+    for field_key in DECLARATION_FIELDS.get(doc_code, ["nom"]):
+        declared_fields[field_key] = st.text_input(
+            FIELD_LABELS.get(field_key, field_key), key=f"decl_field_{doc_code}_{field_key}"
+        )
+
+    col_lieu, col_date = st.columns(2)
+    with col_lieu:
+        lieu_perte = st.text_input("Lieu de la perte (ville, quartier...)", key="decl_lieu")
+    with col_date:
+        date_perte = st.date_input("Date approximative de la perte", key="decl_date")
+
+    st.markdown("**Vos coordonnées** _(pour être recontacté·e si le document est retrouvé)_")
+    contact_nom = st.text_input("Votre nom", key="decl_contact_nom")
+    col_tel, col_email = st.columns(2)
+    with col_tel:
+        contact_tel = st.text_input("Téléphone", key="decl_contact_tel")
+    with col_email:
+        contact_email = st.text_input("Email", key="decl_contact_email")
+
+    if st.button("Enregistrer ma déclaration", type="primary"):
+        cleaned_fields = {k: v.strip() for k, v in declared_fields.items() if v and v.strip()}
+        if not cleaned_fields:
             st.markdown(
-                f"""
-                <div class="cd-result-badge">{icon} {result['type_document']}</div>
-                <span class="cd-confidence">Confiance : {result['confidence']:.0%}</span>
-                """,
+                '<div class="cd-alert">Veuillez renseigner au moins une information sur le document (idéalement le nom).</div>',
+                unsafe_allow_html=True,
+            )
+        elif not contact_tel.strip() and not contact_email.strip():
+            st.markdown(
+                '<div class="cd-alert">Merci d\'indiquer au moins un moyen de vous contacter (téléphone ou email).</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            fields_for_storage = {"type_document": doc_code, **cleaned_fields}
+            decl_id = save_declaration(
+                type_document=doc_code,
+                fields=fields_for_storage,
+                lieu_perte=lieu_perte.strip(),
+                date_perte=str(date_perte),
+                contact_nom=contact_nom.strip(),
+                contact_telephone=contact_tel.strip(),
+                contact_email=contact_email.strip(),
+            )
+            st.markdown(
+                f'<div class="cd-success">✅ Déclaration n°{decl_id} enregistrée. '
+                "Vous serez identifié·e automatiquement si un document correspondant est retrouvé.</div>",
                 unsafe_allow_html=True,
             )
 
-            rows_html = ""
-            for key, value in result["champs"].items():
-                if key == "type_document":
-                    continue
-                if value in (None, "", []):
-                    value_html = '<span class="cd-field-missing">non détecté</span>'
-                else:
-                    value_html = str(value)
-                rows_html += (
-                    f'<div class="cd-field-row">'
-                    f'<span class="cd-field-label">{key.replace("_", " ").capitalize()}</span>'
-                    f'<span class="cd-field-value">{value_html}</span>'
-                    f"</div>"
-                )
-            st.markdown(f'<div style="margin-top:14px;">{rows_html}</div>', unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
+            document_matches = find_matching_documents(doc_code, fields_for_storage)
+            if document_matches:
+                st.markdown("##### 🎉 Bonne nouvelle : un document correspondant a déjà été retrouvé")
+                for match in document_matches:
+                    st.markdown(
+                        f'<div class="cd-success">'
+                        f"Document retrouvé le {match['created_at']} "
+                        f"(correspondance sur « {match['matched_on']} ») — "
+                        f"contactez l'équipe pour organiser la restitution."
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    with st.expander(f"Détails du document retrouvé n°{match['id']}"):
+                        st.json(match["fields"])
 
-        if result["alertes"]:
-            for alert in result["alertes"]:
-                st.markdown(f'<div class="cd-alert">⚠️ {alert}</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="cd-success">✅ Informations enregistrées avec succès.</div>', unsafe_allow_html=True)
-
-        with st.expander("Voir le JSON structuré"):
-            st.json(result["champs"])
-else:
-    st.markdown(
-        '<div class="cd-card" style="text-align:center; color:#8A887F;">'
-        "En attente d'une photo…</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown(
     """

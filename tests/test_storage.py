@@ -1,0 +1,122 @@
+"""
+Tests unitaires du stockage et du rapprochement déclarations perdues <->
+documents retrouvés — utilisent une base SQLite temporaire (pas la base
+"documents.db" réelle), pas besoin d'image.
+
+Lancer avec : python -m pytest tests/test_storage.py -v
+"""
+
+import os
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from storage import (
+    save_document,
+    save_declaration,
+    find_matching_documents,
+    find_matching_declarations,
+    _fields_match,
+)
+
+
+def _tmp_db():
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(path)  # on veut juste un chemin libre, pas un fichier vide
+    return path
+
+
+def test_fields_match_on_numero():
+    assert _fields_match({"numero": "12345678901234567"}, {"numero": "12345678901234567"}) == "numero"
+
+
+def test_fields_match_on_nom_case_and_spacing_insensitive():
+    assert _fields_match({"nom": "  jean   dupont "}, {"nom": "JEAN DUPONT"}) == "nom"
+
+
+def test_fields_no_match():
+    assert _fields_match({"nom": "JEAN DUPONT"}, {"nom": "PAUL MARTIN"}) is None
+
+
+def test_fields_match_prefers_numero_over_nom_mismatch():
+    # Même si le nom diffère (ex. faute de frappe / homonyme), un numéro
+    # identique doit suffire à établir la correspondance.
+    a = {"nom": "JEAN DUPONT", "numero": "111"}
+    b = {"nom": "J DUPONT", "numero": "111"}
+    assert _fields_match(a, b) == "numero"
+
+
+def test_declaration_matches_existing_found_document():
+    db_path = _tmp_db()
+    try:
+        save_document(
+            fields={"type_document": "CNI", "nom": "MARIE NGONO", "numero": "12345678901234567"},
+            confidence=0.8,
+            alerts=[],
+            source_image="photo.jpg",
+            db_path=db_path,
+        )
+        matches = find_matching_documents(
+            "CNI", {"nom": "MARIE NGONO", "numero": "12345678901234567"}, db_path=db_path
+        )
+        assert len(matches) == 1
+        assert matches[0]["matched_on"] == "numero"
+    finally:
+        os.unlink(db_path)
+
+
+def test_found_document_matches_pending_declaration():
+    db_path = _tmp_db()
+    try:
+        save_declaration(
+            type_document="PERMIS",
+            fields={"type_document": "PERMIS", "nom": "PAUL ETOUNDI"},
+            lieu_perte="Douala",
+            date_perte="2026-08-01",
+            contact_nom="Paul Etoundi",
+            contact_telephone="699000000",
+            contact_email="",
+            db_path=db_path,
+        )
+        matches = find_matching_declarations(
+            "PERMIS", {"nom": "PAUL ETOUNDI"}, db_path=db_path
+        )
+        assert len(matches) == 1
+        assert matches[0]["matched_on"] == "nom"
+        assert matches[0]["contact_telephone"] == "699000000"
+    finally:
+        os.unlink(db_path)
+
+
+def test_no_cross_type_match():
+    # Même nom, mais types de documents différents -> pas de rapprochement.
+    db_path = _tmp_db()
+    try:
+        save_document(
+            fields={"type_document": "CNI", "nom": "SAMUEL MBIDA"},
+            confidence=0.7,
+            alerts=[],
+            source_image="photo.jpg",
+            db_path=db_path,
+        )
+        matches = find_matching_documents("PERMIS", {"nom": "SAMUEL MBIDA"}, db_path=db_path)
+        assert matches == []
+    finally:
+        os.unlink(db_path)
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in globals().items() if k.startswith("test_")]
+    passed, failed = 0, 0
+    for t in tests:
+        try:
+            t()
+            print(f"OK   {t.__name__}")
+            passed += 1
+        except AssertionError as e:
+            print(f"FAIL {t.__name__}: {e}")
+            failed += 1
+    print(f"\n{passed} réussis, {failed} échoués")
+    sys.exit(1 if failed else 0)

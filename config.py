@@ -54,6 +54,29 @@ DOCUMENT_TYPES = {
     },
 }
 
+# Champs demandés dans le formulaire de déclaration de perte, par type de
+# document — uniquement les champs utiles pour retrouver une correspondance
+# avec un document retrouvé (mêmes clés que celles produites par
+# extractor.extract_fields(), pour que la comparaison soit directe).
+DECLARATION_FIELDS = {
+    "CNI": ["nom", "numero", "date_naissance"],
+    "RECEPISSE": ["nom", "numero_recepisse"],
+    "PASSEPORT": ["nom", "numero"],
+    "ACTE_NAISSANCE": ["nom", "date_naissance", "lieu_naissance"],
+    "DIPLOME": ["nom", "numero_matricule"],
+    "PERMIS": ["nom", "date_naissance"],
+}
+
+# Libellés affichés dans le formulaire pour chaque clé de champ.
+FIELD_LABELS = {
+    "nom": "Nom complet",
+    "numero": "Numéro du document",
+    "numero_recepisse": "Numéro du récépissé",
+    "numero_matricule": "Numéro de matricule",
+    "date_naissance": "Date de naissance (jj/mm/aaaa)",
+    "lieu_naissance": "Lieu de naissance",
+}
+
 # Motif de la zone MRZ (2 lignes, alphabet ICAO restreint, ~44 caractères).
 MRZ_LINE_REGEX = r"[A-Z0-9<]{30,44}"
 

@@ -5,6 +5,15 @@ photo de document administratif camerounais en entrée (CNI, récépissé,
 passeport, acte de naissance, diplôme, permis de conduire) et produit en
 sortie une donnée structurée et validée, enregistrée en base.
 
+Deux flux, dans deux onglets de l'interface Streamlit :
+
+- **🔍 J'ai retrouvé un document** : dépôt d'une photo -> détection +
+  extraction automatique (flux décrit ci-dessous).
+- **📢 J'ai perdu un document** : pas de photo (le document est perdu) —
+  la personne renseigne ce qu'elle en connaît (type, nom, numéro si elle s'en
+  souvient...) et ses coordonnées. Voir "Rapprochement déclarations ⟷
+  documents retrouvés" plus bas.
+
 ## Pourquoi une approche "sans dataset" pour cette v1
 
 Entraîner un CNN nécessite un jeu d'images labellisées que nous n'avons pas
@@ -29,18 +38,52 @@ changer l'architecture globale — voir section "Évolution vers un CNN".
 ```
 document_detector/
 ├── main.py            # point d'entrée : orchestre tout le pipeline
+├── app.py              # interface Streamlit (2 onglets : retrouvé / perdu)
 ├── config.py           # types de documents, mots-clés, formats de numéros
 ├── preprocessing.py    # redressement, réduction du bruit (OpenCV)
 ├── ocr.py               # lecture du texte (Tesseract)
 ├── classifier.py        # identification du type de document (règles)
 ├── extractor.py          # extraction des champs (nom, numéro, dates...)
-├── validator.py           # contrôle de cohérence avant enregistrement
-├── storage.py              # enregistrement SQLite (prototype)
+├── zones.py               # lecture OCR par zones (mise en page connue)
+├── validator.py            # contrôle de cohérence avant enregistrement
+├── storage.py               # SQLite (prototype) : documents + déclarations + rapprochement
 ├── tests/
 │   ├── test_pipeline.py            # tests unitaires (classification, extraction, validation)
+│   ├── test_storage.py             # tests unitaires (rapprochement déclarations ⟷ documents)
 │   └── generate_sample_images.py   # génère des images de test (gabarits texte)
 └── requirements.txt
 ```
+
+## Déclaration de perte et rapprochement automatique
+
+Une personne qui a perdu un document n'a pas de photo à déposer. L'onglet
+"📢 J'ai perdu un document" lui permet donc de renseigner directement ce
+qu'elle sait (type de document, nom, numéro si connu — champs définis dans
+`config.DECLARATION_FIELDS`), les circonstances de la perte, et ses
+coordonnées (téléphone et/ou email, au moins un des deux obligatoire).
+
+Chaque déclaration est enregistrée dans une table SQLite dédiée
+(`declarations`, voir `storage.init_declarations_table`), séparée de la table
+`documents` qui contient les documents effectivement retrouvés et scannés.
+
+Le rapprochement (`storage._fields_match`) compare deux jeux de champs :
+priorité à une correspondance exacte sur un champ numéro (`numero`,
+`numero_recepisse` ou `numero_matricule`, sensible/fiable) ; à défaut, repli
+sur le nom (comparaison insensible à la casse et aux espaces, moins fiable
+en cas d'homonymie mais utile quand aucun numéro n'est connu). Il s'applique
+dans les deux sens :
+
+- **`find_matching_documents`** : au moment de la déclaration, si un document
+  correspondant a déjà été retrouvé, la personne le voit immédiatement.
+- **`find_matching_declarations`** : au moment où un document est scanné
+  (onglet "retrouvé"), si une déclaration de perte en attente correspond, ses
+  coordonnées de contact s'affichent aussitôt à la personne qui a retrouvé le
+  document.
+
+C'est un rapprochement de prototype (comparaison exacte champ par champ, pas
+de tolérance aux fautes de frappe/OCR ni de score de similarité) — à faire
+évoluer si le volume de déclarations grandit (ex. distance de Levenshtein sur
+le nom, recherche floue sur le numéro).
 
 ## Installation sur le serveur Ubuntu
 
@@ -83,12 +126,14 @@ Informations enregistrées avec succès.
 
 Les documents enregistrés sont stockés dans `documents.db` (SQLite), table
 `documents`, avec les champs extraits en JSON et les éventuelles alertes de
-validation.
+validation. Les déclarations de perte (onglet "perdu") sont dans la table
+`declarations` de la même base — voir section précédente.
 
 ## Tests
 
 ```bash
-# Tests unitaires (classification, extraction, validation — pas besoin d'image)
+# Tests unitaires (classification, extraction, validation, rapprochement
+# déclarations <-> documents — pas besoin d'image)
 python3 -m pytest tests/ -v
 
 # Génère des images de test (gabarits texte) puis teste le pipeline complet
@@ -124,6 +169,12 @@ de vraies photos**, à faire dès que possible.
   documenté) — validation actuellement limitée à la présence des champs.
 - Le stockage SQLite est temporaire : à brancher sur la base de données
   réelle du système une fois l'architecture backend confirmée.
+- Le rapprochement déclaration ⟷ document retrouvé est une comparaison
+  exacte (numéro identique, ou nom identique aux espaces/casse près) : pas de
+  tolérance aux fautes de frappe côté déclarant ni aux erreurs d'OCR côté
+  document scanné. Pas encore de notification automatique (email/SMS) quand
+  une correspondance apparaît après coup — pour l'instant, le rapprochement
+  n'est affiché qu'au moment où l'une des deux parties utilise l'interface.
 
 ## Évolution vers un CNN (v2)
 
