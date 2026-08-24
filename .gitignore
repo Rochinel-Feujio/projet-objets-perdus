@@ -3,3 +3,8 @@ __pycache__/
 documents.db
 documents.db-journal
 tests/sample_images/
+
+# Secrets Streamlit (identifiants de connexion à la base Postgres, etc.) —
+# ne doit JAMAIS être commité. Voir .streamlit/secrets.toml.example pour le
+# format attendu.
+.streamlit/secrets.toml

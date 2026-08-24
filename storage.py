@@ -1,50 +1,155 @@
 """
-Stockage des documents identifiés — SQLite pour ce prototype.
-À remplacer/brancher sur la base de données réelle du système
-(PostgreSQL/MySQL...) une fois l'architecture backend confirmée.
+Stockage des documents identifiés — deux backends possibles, choisis
+automatiquement selon la configuration :
+
+  - PostgreSQL (recommandé pour une vraie persistance) si une URL de
+    connexion est fournie via `st.secrets["DATABASE_URL"]` (Streamlit) ou
+    la variable d'environnement `DATABASE_URL`. Un service comme Supabase
+    (offre gratuite) convient parfaitement — voir README.md, section
+    "Base de données persistante (PostgreSQL)".
+  - SQLite local (fichier `documents.db`, `config.DB_PATH`) sinon — c'est
+    le mode utilisé automatiquement par les tests (isolation via un fichier
+    temporaire différent par test) et pratique pour développer en local
+    sans rien configurer.
+
+Le reste du code (app.py, main.py) ne sait pas quel backend est actif : les
+fonctions ci-dessous ont exactement la même signature dans les deux cas.
 """
 
 import hashlib
-import secrets
-import sqlite3
 import json
+import os
+import secrets
 from datetime import datetime
+from functools import lru_cache
+
+import sqlalchemy as sa
+from sqlalchemy import Column, Float, Integer, MetaData, Table, Text
 
 from config import DB_PATH
 
+metadata = MetaData()
 
-def _ensure_column(conn, table: str, column: str, coltype_sql: str):
-    """Ajoute une colonne à une table existante si elle n'existe pas déjà
-    (migration légère pour ce prototype SQLite — pas de vrai outil de
-    migration comme Alembic à ce stade)."""
-    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-    if column not in existing:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype_sql}")
+documents_table = Table(
+    "documents",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("type_document", Text, nullable=False),
+    Column("confidence", Float),
+    Column("fields_json", Text, nullable=False),
+    Column("alerts_json", Text),
+    Column("source_image", Text),
+    Column("created_at", Text, nullable=False),
+    Column("user_id", Integer),
+    Column("finder_contact", Text),
+)
+
+declarations_table = Table(
+    "declarations",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("type_document", Text, nullable=False),
+    Column("fields_json", Text, nullable=False),
+    Column("lieu_perte", Text),
+    Column("date_perte", Text),
+    Column("contact_nom", Text),
+    Column("contact_telephone", Text),
+    Column("contact_email", Text),
+    Column("statut", Text, nullable=False, server_default="en_attente"),
+    Column("created_at", Text, nullable=False),
+    Column("user_id", Integer),
+)
+
+users_table = Table(
+    "users",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("nom", Text, nullable=False),
+    Column("email", Text, nullable=False, unique=True),
+    Column("telephone", Text),
+    Column("password_hash", Text, nullable=False),
+    Column("password_salt", Text, nullable=False),
+    Column("created_at", Text, nullable=False),
+)
+
+
+# ---------------------------------------------------------------------------
+# Résolution du backend actif + gestion du schéma.
+# ---------------------------------------------------------------------------
+
+def _database_url():
+    """URL de connexion Postgres si configurée, sinon None (repli SQLite).
+    Cherche d'abord dans les secrets Streamlit (st.secrets["DATABASE_URL"]),
+    puis dans la variable d'environnement DATABASE_URL — utile pour lancer
+    main.py en CLI ou exécuter les tests sans dépendre de Streamlit."""
+    try:
+        import streamlit as st
+
+        try:
+            if "DATABASE_URL" in st.secrets:
+                return st.secrets["DATABASE_URL"]
+        except Exception:
+            # st.secrets lève une exception s'il n'y a pas de fichier
+            # secrets.toml du tout (cas normal en local sans Postgres) —
+            # on se rabat simplement sur la variable d'environnement.
+            pass
+    except Exception:
+        pass
+    return os.environ.get("DATABASE_URL")
+
+
+def _ensure_schema(engine):
+    """Crée les tables manquantes (metadata.create_all, portable
+    SQLite/Postgres) puis ajoute les colonnes manquantes sur des tables déjà
+    existantes avec un schéma plus ancien (migration légère, pour ne pas
+    perdre les données d'une base SQLite locale créée par une version
+    précédente du prototype)."""
+    metadata.create_all(engine, checkfirst=True)
+    inspector = sa.inspect(engine)
+    for table in metadata.tables.values():
+        existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in existing_cols:
+                continue
+            type_sql = "INTEGER" if isinstance(col.type, Integer) else "TEXT"
+            with engine.begin() as conn:
+                conn.execute(sa.text(f"ALTER TABLE {table.name} ADD COLUMN {col.name} {type_sql}"))
+
+
+@lru_cache(maxsize=None)
+def _engine_for(db_path: str):
+    """Un moteur SQLAlchemy par cible. Si DATABASE_URL est configurée, tous
+    les appels partagent le même moteur Postgres (db_path est alors ignoré
+    — il n'y a qu'une seule base). Sinon, chaque valeur de db_path obtient
+    son propre moteur SQLite sur ce fichier : c'est ce qui permet aux tests
+    de s'isoler les uns des autres avec un fichier temporaire différent à
+    chaque fois, exactement comme avant ce passage à SQLAlchemy."""
+    url = _database_url()
+    if url:
+        engine = sa.create_engine(url, pool_pre_ping=True, future=True)
+    else:
+        engine = sa.create_engine(f"sqlite:///{db_path}", future=True)
+    _ensure_schema(engine)
+    return engine
 
 
 def init_db(db_path: str = DB_PATH):
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS documents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type_document TEXT NOT NULL,
-            confidence REAL,
-            fields_json TEXT NOT NULL,
-            alerts_json TEXT,
-            source_image TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-    # Migration : compte de la personne qui a retrouvé le document (peut être
-    # NULL si retrouvé anonymement) + un moyen de contact affiché à la
-    # personne qui recherche son document ("voir les coordonnées").
-    _ensure_column(conn, "documents", "user_id", "INTEGER")
-    _ensure_column(conn, "documents", "finder_contact", "TEXT")
-    conn.commit()
-    return conn
+    """Conservé pour compatibilité : garantit que le schéma existe et
+    renvoie le moteur SQLAlchemy actif (Postgres ou SQLite selon la config)."""
+    return _engine_for(db_path)
 
+
+def init_declarations_table(db_path: str = DB_PATH):
+    return _engine_for(db_path)
+
+
+def init_users_table(db_path: str = DB_PATH):
+    return _engine_for(db_path)
+
+
+# ---------------------------------------------------------------------------
+# Documents retrouvés.
+# ---------------------------------------------------------------------------
 
 def save_document(
     fields: dict,
@@ -55,40 +160,31 @@ def save_document(
     user_id: int = None,
     finder_contact: str = None,
 ) -> int:
-    conn = init_db(db_path)
-    cursor = conn.execute(
-        """
-        INSERT INTO documents
-            (type_document, confidence, fields_json, alerts_json, source_image,
-             created_at, user_id, finder_contact)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            fields.get("type_document"),
-            confidence,
-            json.dumps(fields, ensure_ascii=False),
-            json.dumps(alerts, ensure_ascii=False),
-            source_image,
-            datetime.now().isoformat(timespec="seconds"),
-            user_id,
-            finder_contact,
-        ),
-    )
-    conn.commit()
-    row_id = cursor.lastrowid
-    conn.close()
-    return row_id
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        result = conn.execute(
+            documents_table.insert().values(
+                type_document=fields.get("type_document"),
+                confidence=confidence,
+                fields_json=json.dumps(fields, ensure_ascii=False),
+                alerts_json=json.dumps(alerts, ensure_ascii=False),
+                source_image=source_image,
+                created_at=datetime.now().isoformat(timespec="seconds"),
+                user_id=user_id,
+                finder_contact=finder_contact,
+            )
+        )
+        return result.inserted_primary_key[0]
 
 
 def find_by_field_value(value: str, db_path: str = DB_PATH):
     """Recherche simple : renvoie les documents dont le JSON contient la valeur donnée
     (utile pour un premier prototype de correspondance objets perdus / retrouvés)."""
-    conn = init_db(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM documents WHERE fields_json LIKE ?", (f"%{value}%",)
-    ).fetchall()
-    conn.close()
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        rows = conn.execute(
+            documents_table.select().where(documents_table.c.fields_json.like(f"%{value}%"))
+        ).mappings().all()
     return [dict(row) for row in rows]
 
 
@@ -101,10 +197,11 @@ def _row_to_document(row) -> dict:
 
 def get_document(doc_id: int, db_path: str = DB_PATH):
     """Un document retrouvé par son id (pour l'écran de détail)."""
-    conn = init_db(db_path)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
-    conn.close()
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        row = conn.execute(
+            documents_table.select().where(documents_table.c.id == doc_id)
+        ).mappings().first()
     return _row_to_document(row) if row else None
 
 
@@ -113,25 +210,26 @@ def list_found_documents(limit: int = 100, db_path: str = DB_PATH):
     utilisateurs confondus (public — c'est le principe même de la
     plateforme : que la personne qui a perdu son document puisse le
     reconnaître dans la liste)."""
-    conn = init_db(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM documents ORDER BY created_at DESC LIMIT ?", (limit,)
-    ).fetchall()
-    conn.close()
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        rows = conn.execute(
+            documents_table.select()
+            .order_by(documents_table.c.created_at.desc())
+            .limit(limit)
+        ).mappings().all()
     return [_row_to_document(row) for row in rows]
 
 
 def list_user_documents(user_id: int, db_path: str = DB_PATH):
     """Documents retrouvés et enregistrés par cet utilisateur (onglet
     "Trouvés" du tableau de bord "Mes déclarations")."""
-    conn = init_db(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM documents WHERE user_id = ? ORDER BY created_at DESC",
-        (user_id,),
-    ).fetchall()
-    conn.close()
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        rows = conn.execute(
+            documents_table.select()
+            .where(documents_table.c.user_id == user_id)
+            .order_by(documents_table.c.created_at.desc())
+        ).mappings().all()
     return [_row_to_document(row) for row in rows]
 
 
@@ -140,31 +238,6 @@ def list_user_documents(user_id: int, db_path: str = DB_PATH):
 # pas de photo à déposer) renseigne ce qu'elle sait sur ce document, pour être
 # recontactée si un document correspondant est retrouvé et scanné plus tard.
 # ---------------------------------------------------------------------------
-
-def init_declarations_table(db_path: str = DB_PATH):
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS declarations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type_document TEXT NOT NULL,
-            fields_json TEXT NOT NULL,
-            lieu_perte TEXT,
-            date_perte TEXT,
-            contact_nom TEXT,
-            contact_telephone TEXT,
-            contact_email TEXT,
-            statut TEXT NOT NULL DEFAULT 'en_attente',
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-    # Migration : compte de la personne qui déclare (peut être NULL si
-    # déclaration faite sans compte, gardé possible pour ce prototype).
-    _ensure_column(conn, "declarations", "user_id", "INTEGER")
-    conn.commit()
-    return conn
-
 
 def save_declaration(
     type_document: str,
@@ -177,30 +250,23 @@ def save_declaration(
     db_path: str = DB_PATH,
     user_id: int = None,
 ) -> int:
-    conn = init_declarations_table(db_path)
-    cursor = conn.execute(
-        """
-        INSERT INTO declarations
-            (type_document, fields_json, lieu_perte, date_perte,
-             contact_nom, contact_telephone, contact_email, statut, created_at, user_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'en_attente', ?, ?)
-        """,
-        (
-            type_document,
-            json.dumps(fields, ensure_ascii=False),
-            lieu_perte,
-            date_perte,
-            contact_nom,
-            contact_telephone,
-            contact_email,
-            datetime.now().isoformat(timespec="seconds"),
-            user_id,
-        ),
-    )
-    conn.commit()
-    decl_id = cursor.lastrowid
-    conn.close()
-    return decl_id
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        result = conn.execute(
+            declarations_table.insert().values(
+                type_document=type_document,
+                fields_json=json.dumps(fields, ensure_ascii=False),
+                lieu_perte=lieu_perte,
+                date_perte=date_perte,
+                contact_nom=contact_nom,
+                contact_telephone=contact_telephone,
+                contact_email=contact_email,
+                statut="en_attente",
+                created_at=datetime.now().isoformat(timespec="seconds"),
+                user_id=user_id,
+            )
+        )
+        return result.inserted_primary_key[0]
 
 
 def _row_to_declaration(row) -> dict:
@@ -212,13 +278,13 @@ def _row_to_declaration(row) -> dict:
 def list_user_declarations(user_id: int, db_path: str = DB_PATH):
     """Déclarations de perte faites par cet utilisateur (onglet "Perdus" du
     tableau de bord "Mes déclarations")."""
-    conn = init_declarations_table(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM declarations WHERE user_id = ? ORDER BY created_at DESC",
-        (user_id,),
-    ).fetchall()
-    conn.close()
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        rows = conn.execute(
+            declarations_table.select()
+            .where(declarations_table.c.user_id == user_id)
+            .order_by(declarations_table.c.created_at.desc())
+        ).mappings().all()
     return [_row_to_declaration(row) for row in rows]
 
 
@@ -256,12 +322,11 @@ def find_matching_documents(type_document: str, fields: dict, db_path: str = DB_
     et enregistrés qui pourraient lui correspondre (même type, numéro ou nom
     identique). Chaque résultat inclut 'fields' (dict) et 'matched_on'
     (le champ ayant permis le rapprochement)."""
-    conn = init_db(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM documents WHERE type_document = ?", (type_document,)
-    ).fetchall()
-    conn.close()
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        rows = conn.execute(
+            documents_table.select().where(documents_table.c.type_document == type_document)
+        ).mappings().all()
 
     matches = []
     for row in rows:
@@ -279,13 +344,14 @@ def find_matching_declarations(type_document: str, fields: dict, db_path: str = 
     """Symétrique de find_matching_documents() : depuis un document qui vient
     d'être retrouvé et scanné, cherche les déclarations de perte encore en
     attente qui pourraient lui correspondre."""
-    conn = init_declarations_table(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM declarations WHERE type_document = ? AND statut = 'en_attente'",
-        (type_document,),
-    ).fetchall()
-    conn.close()
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        rows = conn.execute(
+            declarations_table.select().where(
+                (declarations_table.c.type_document == type_document)
+                & (declarations_table.c.statut == "en_attente")
+            )
+        ).mappings().all()
 
     matches = []
     for row in rows:
@@ -309,25 +375,6 @@ def find_matching_declarations(type_document: str, fields: dict, db_path: str = 
 # (ex. gestionnaire dédié + bcrypt/argon2, envoi d'email de confirmation)
 # avant tout usage en production — voir "Limites connues" dans le README.
 # ---------------------------------------------------------------------------
-
-def init_users_table(db_path: str = DB_PATH):
-    conn = sqlite3.connect(db_path)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nom TEXT NOT NULL,
-            email TEXT NOT NULL UNIQUE,
-            telephone TEXT,
-            password_hash TEXT NOT NULL,
-            password_salt TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-    conn.commit()
-    return conn
-
 
 def _hash_password(password: str, salt_hex: str = None):
     salt_hex = salt_hex or secrets.token_hex(16)
@@ -358,41 +405,37 @@ def create_user(nom: str, email: str, password: str, telephone: str = "", db_pat
     if not password or len(password) < 6:
         raise ValueError("Le mot de passe doit contenir au moins 6 caractères.")
 
-    conn = init_users_table(db_path)
-    existing = conn.execute("SELECT id FROM users WHERE email = ?", (email_norm,)).fetchone()
-    if existing:
-        conn.close()
-        raise ValueError("Un compte existe déjà avec cet email.")
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        existing = conn.execute(
+            users_table.select().where(users_table.c.email == email_norm)
+        ).first()
+        if existing:
+            raise ValueError("Un compte existe déjà avec cet email.")
 
-    salt_hex, hash_hex = _hash_password(password)
-    cursor = conn.execute(
-        """
-        INSERT INTO users (nom, email, telephone, password_hash, password_salt, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            nom,
-            email_norm,
-            (telephone or "").strip(),
-            hash_hex,
-            salt_hex,
-            datetime.now().isoformat(timespec="seconds"),
-        ),
-    )
-    conn.commit()
-    user_id = cursor.lastrowid
-    conn.close()
-    return user_id
+        salt_hex, hash_hex = _hash_password(password)
+        result = conn.execute(
+            users_table.insert().values(
+                nom=nom,
+                email=email_norm,
+                telephone=(telephone or "").strip(),
+                password_hash=hash_hex,
+                password_salt=salt_hex,
+                created_at=datetime.now().isoformat(timespec="seconds"),
+            )
+        )
+        return result.inserted_primary_key[0]
 
 
 def authenticate_user(email: str, password: str, db_path: str = DB_PATH):
     """Renvoie le dict utilisateur (sans le hash) si email/mot de passe sont
     corrects, sinon None."""
     email_norm = (email or "").strip().lower()
-    conn = init_users_table(db_path)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM users WHERE email = ?", (email_norm,)).fetchone()
-    conn.close()
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        row = conn.execute(
+            users_table.select().where(users_table.c.email == email_norm)
+        ).mappings().first()
     if not row or not password:
         return None
     _, hash_hex = _hash_password(password, row["password_salt"])
@@ -402,8 +445,9 @@ def authenticate_user(email: str, password: str, db_path: str = DB_PATH):
 
 
 def get_user(user_id: int, db_path: str = DB_PATH):
-    conn = init_users_table(db_path)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    conn.close()
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        row = conn.execute(
+            users_table.select().where(users_table.c.id == user_id)
+        ).mappings().first()
     return _public_user(row) if row else None

@@ -52,20 +52,100 @@ changer l'architecture globale — voir section "Évolution vers un CNN".
 document_detector/
 ├── main.py            # point d'entrée : analyze_document() (pipeline sans écriture) + process_document() (pipeline + enregistrement)
 ├── app.py              # interface Streamlit Findici (routeur à 5 écrans + connexion)
-├── config.py           # types de documents, mots-clés, formats de numéros
-├── preprocessing.py    # redressement, réduction du bruit (OpenCV)
-├── ocr.py               # lecture du texte (Tesseract)
-├── classifier.py        # identification du type de document (règles)
-├── extractor.py          # extraction des champs (nom, numéro, dates...)
-├── zones.py               # lecture OCR par zones (mise en page connue)
-├── validator.py            # contrôle de cohérence avant enregistrement
-├── storage.py               # SQLite (prototype) : comptes, documents, déclarations, rapprochement
+├── pdf_input.py         # conversion PDF -> image (1ère page) pour réutiliser le même pipeline
+├── config.py             # types de documents, mots-clés, formats de numéros
+├── preprocessing.py       # redressement, réduction du bruit (OpenCV)
+├── ocr.py                  # lecture du texte (Tesseract)
+├── classifier.py            # identification du type de document (règles)
+├── extractor.py              # extraction des champs (nom, numéro, dates...)
+├── zones.py                   # lecture OCR par zones (mise en page connue)
+├── validator.py                 # contrôle de cohérence avant enregistrement
+├── storage.py                    # SQLite (prototype) : comptes, documents, déclarations, rapprochement
 ├── tests/
 │   ├── test_pipeline.py            # tests unitaires (classification, extraction, validation)
 │   ├── test_storage.py             # tests unitaires (comptes, rapprochement, listes)
+│   ├── test_pdf_input.py           # tests unitaires (conversion PDF -> image, pipeline sur PDF)
 │   └── generate_sample_images.py   # génère des images de test (gabarits texte)
 └── requirements.txt
 ```
+
+## Documents envoyés en PDF
+
+En plus d'une photo (JPG/PNG), un document peut être envoyé au format **PDF**
+(scan) — sur l'écran "Déclarer trouvé" (mode détection automatique) et sur
+l'écran "Déclarer perdu" (ancienne photo pour pré-remplissage). La première
+page du PDF est automatiquement convertie en image (`pdf_input.py`, via
+PyMuPDF) puis traverse exactement le même pipeline qu'une photo classique —
+aucune différence de traitement une fois converti.
+
+- Si le PDF contient plusieurs pages, seule la **première** est analysée
+  (les documents administratifs de ce prototype tiennent sur une seule
+  page) ; une alerte le signale explicitement dans le résultat.
+- L'aperçu visuel (`st.image`) n'est pas disponible pour un PDF dans
+  l'interface — seul le résultat de l'analyse s'affiche.
+- Dépendance ajoutée : `PyMuPDF` (voir `requirements.txt`) — pas de binaire
+  système à installer séparément (contrairement à `pdf2image`/`poppler`),
+  ce qui simplifie le déploiement sur Streamlit Community Cloud.
+
+## Base de données persistante (PostgreSQL)
+
+Par défaut, l'application stocke tout dans un fichier SQLite local
+(`documents.db`) — pratique pour développer, mais **ce fichier ne doit pas
+être considéré comme un stockage définitif** : si l'app est un jour
+déployée sur un service comme Streamlit Community Cloud, ce type
+d'hébergement redémarre périodiquement le conteneur applicatif et en efface
+le disque à chaque redémarrage/redéploiement — tout ce qui a été enregistré
+depuis le dernier déploiement (comptes, documents, déclarations) serait
+alors perdu.
+
+Pour une vraie persistance, l'application sait aussi se connecter à une
+base **PostgreSQL** hébergée : dès qu'une chaîne de connexion est fournie
+(voir ci-dessous), `storage.py` bascule automatiquement dessus — le reste
+du code (app.py, main.py) n'a besoin d'aucune modification, et rien ne
+change dans son fonctionnement.
+
+### Mise en place avec Supabase (offre gratuite)
+
+[Supabase](https://supabase.com) propose un hébergement PostgreSQL gratuit
+amplement suffisant pour ce prototype :
+
+1. Crée un compte sur supabase.com et un nouveau projet (choisis une
+   région proche, ex. Europe, et note le mot de passe de base de données
+   que tu définis à la création — il ne sera plus jamais réaffiché en
+   clair).
+2. Dans le projet, va dans **Project Settings → Database → Connection
+   string**, onglet **URI**. Tu obtiens une chaîne du type :
+   `postgresql://postgres:[MOT-DE-PASSE]@db.xxxxxxxxxxxx.supabase.co:5432/postgres`
+3. Remplace `postgresql://` par `postgresql+psycopg2://` en tout début de
+   chaîne (indique à SQLAlchemy quel pilote Python utiliser) et
+   `[MOT-DE-PASSE]` par ton vrai mot de passe.
+4. En local, copie `.streamlit/secrets.toml.example` en
+   `.streamlit/secrets.toml` (même dossier) et colle-y cette chaîne comme
+   valeur de `DATABASE_URL`. **Ce fichier `secrets.toml` ne doit jamais
+   être commité** (il est déjà dans `.gitignore` — seul le `.example`,
+   sans vraie valeur, est versionné).
+5. Relance `streamlit run app.py` : l'application crée automatiquement les
+   tables nécessaires (documents, déclarations, utilisateurs) sur Supabase
+   au premier démarrage, et toutes les données créées ensuite y sont
+   persistées.
+6. Le jour où l'app est déployée sur Streamlit Community Cloud, ajoute la
+   même clé `DATABASE_URL` dans les **Secrets** de l'application (menu de
+   l'app déployée → Settings → Secrets) — même format TOML que le fichier
+   local.
+
+Sans `DATABASE_URL` configurée (ni en secret Streamlit, ni en variable
+d'environnement), l'application continue de fonctionner exactement comme
+avant, sur SQLite local — aucune configuration n'est obligatoire pour
+simplement essayer le projet.
+
+### Migration des données existantes
+
+Comme il s'agissait jusqu'ici de données de test, il n'y a pas de script de
+migration automatique de l'ancien `documents.db` local vers Postgres — la
+base Postgres démarre vide. Si tu as des données locales précises à
+reprendre, demande-le explicitement : c'est un script ponctuel simple à
+écrire (lire les lignes SQLite, les réinsérer via `storage.save_document`/
+`save_declaration`/`create_user`).
 
 ## Comptes utilisateurs et tableau de bord personnel
 
@@ -201,8 +281,10 @@ de vraies photos**, à faire dès que possible.
 - Les formats de numéro de passeport, d'acte de naissance et de permis ne
   sont pas strictement validés (pas de format national publiquement
   documenté) — validation actuellement limitée à la présence des champs.
-- Le stockage SQLite est temporaire : à brancher sur la base de données
-  réelle du système une fois l'architecture backend confirmée.
+- Le stockage SQLite (backend par défaut, sans configuration) reste un
+  stockage de développement, non persistant en cas de déploiement sur un
+  hébergement à disque éphémère — voir "Base de données persistante
+  (PostgreSQL)" plus haut pour brancher une vraie base hébergée.
 - Le rapprochement déclaration ⟷ document retrouvé est une comparaison
   exacte (numéro identique, ou nom identique aux espaces/casse près) : pas de
   tolérance aux fautes de frappe côté déclarant ni aux erreurs d'OCR côté

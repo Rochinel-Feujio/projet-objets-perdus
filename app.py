@@ -13,6 +13,7 @@ import cv2
 import streamlit as st
 
 from main import process_document, analyze_document
+from pdf_input import pdf_first_page_to_image
 from config import DOCUMENT_TYPES, DECLARATION_FIELDS, FIELD_LABELS
 from storage import (
     save_declaration,
@@ -31,6 +32,21 @@ from storage import (
 def cv2_to_rgb(image):
     """Convertit une image OpenCV (BGR) en RGB pour l'affichage Streamlit."""
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+
+def is_pdf_upload(filename: str) -> bool:
+    return os.path.splitext(filename)[1].lower() == ".pdf"
+
+
+def save_uploaded_to_tmp(uploaded_file) -> str:
+    """Enregistre un fichier envoyé via st.file_uploader dans un fichier
+    temporaire, en conservant sa vraie extension (.pdf, .jpg, .png...) —
+    indispensable pour que analyze_document()/process_document() détectent
+    correctement un PDF (voir pdf_input.is_pdf, basé sur l'extension)."""
+    suffix = os.path.splitext(uploaded_file.name)[1].lower() or ".png"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(uploaded_file.getbuffer())
+        return tmp.name
 
 
 st.set_page_config(
@@ -558,18 +574,18 @@ def screen_declarer_perdu():
     render_nav()
 
     st.markdown('<div class="cd-card">', unsafe_allow_html=True)
-    st.markdown("##### 🖼️ Vous avez une ancienne photo de ce document ?")
+    st.markdown("##### 🖼️ Vous avez une ancienne photo (ou un PDF) de ce document ?")
     st.markdown(
         "Utilisez-la pour pré-remplir automatiquement le formulaire ci-dessous "
         "(elle n'est pas enregistrée comme document retrouvé)."
     )
     old_photo = st.file_uploader(
-        "Photo existante (optionnel)", type=["jpg", "jpeg", "png"], key="lost_old_photo"
+        "Photo ou PDF existant (optionnel)",
+        type=["jpg", "jpeg", "png", "pdf"],
+        key="lost_old_photo",
     )
     if old_photo is not None and st.button("Analyser cette photo", key="analyze_old_photo"):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            tmp.write(old_photo.getbuffer())
-            tmp_path = tmp.name
+        tmp_path = save_uploaded_to_tmp(old_photo)
         try:
             with st.spinner("Analyse en cours..."):
                 analysis = analyze_document(tmp_path)
@@ -688,10 +704,10 @@ def screen_declarer_trouve():
 
     if mode.startswith("📷"):
         st.markdown('<div class="cd-card">', unsafe_allow_html=True)
-        st.markdown("##### 📤 Choisis une photo de document")
+        st.markdown("##### 📤 Choisis une photo ou un PDF de document")
         uploaded_file = st.file_uploader(
-            "Formats acceptés : JPG, PNG",
-            type=["jpg", "jpeg", "png"],
+            "Formats acceptés : JPG, PNG, PDF",
+            type=["jpg", "jpeg", "png", "pdf"],
             label_visibility="collapsed",
             key="trouve_photo",
         )
@@ -705,12 +721,19 @@ def screen_declarer_trouve():
 
         if uploaded_file is not None:
             col1, col2 = st.columns([1, 1])
+            uploaded_is_pdf = is_pdf_upload(uploaded_file.name)
             with col1:
-                st.image(uploaded_file, caption="Photo envoyée", use_container_width=True)
+                if uploaded_is_pdf:
+                    st.markdown(
+                        '<div class="cd-card" style="text-align:center; color:#5B5F58;">'
+                        "📄 PDF envoyé — aperçu non disponible, mais l'analyse ci-contre "
+                        "porte bien sur ce fichier.</div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.image(uploaded_file, caption="Photo envoyée", use_container_width=True)
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-                tmp.write(uploaded_file.getbuffer())
-                tmp_path = tmp.name
+            tmp_path = save_uploaded_to_tmp(uploaded_file)
 
             result = None
             with st.spinner("Analyse en cours..."):
@@ -719,20 +742,29 @@ def screen_declarer_trouve():
                         from preprocessing import load_and_clean, get_aspect_ratio, is_blurry
                         from ocr import extract_text
 
-                        corrected_image, _ = load_and_clean(tmp_path)
-                        ratio = get_aspect_ratio(corrected_image)
-                        blurry, sharpness = is_blurry(corrected_image)
-                        raw = extract_text(corrected_image)
-                        with st.expander("Détails techniques (debug)", expanded=True):
-                            st.text(f"Ratio largeur/hauteur (après correction) : {ratio:.2f}")
-                            st.text(f"Netteté (variance Laplacien) : {sharpness:.1f} {'-> FLOUE' if blurry else '-> nette'}")
-                            st.image(
-                                cv2_to_rgb(corrected_image),
-                                caption="Image après correction de perspective / redressement",
-                                use_container_width=True,
-                            )
-                            st.text("Texte brut lu par l'OCR :")
-                            st.text(raw if raw.strip() else "(rien lu par l'OCR)")
+                        debug_image_path = tmp_path
+                        debug_converted_path = None
+                        if uploaded_is_pdf:
+                            debug_converted_path, _pages = pdf_first_page_to_image(tmp_path)
+                            debug_image_path = debug_converted_path
+                        try:
+                            corrected_image, _ = load_and_clean(debug_image_path)
+                            ratio = get_aspect_ratio(corrected_image)
+                            blurry, sharpness = is_blurry(corrected_image)
+                            raw = extract_text(corrected_image)
+                            with st.expander("Détails techniques (debug)", expanded=True):
+                                st.text(f"Ratio largeur/hauteur (après correction) : {ratio:.2f}")
+                                st.text(f"Netteté (variance Laplacien) : {sharpness:.1f} {'-> FLOUE' if blurry else '-> nette'}")
+                                st.image(
+                                    cv2_to_rgb(corrected_image),
+                                    caption="Image après correction de perspective / redressement",
+                                    use_container_width=True,
+                                )
+                                st.text("Texte brut lu par l'OCR :")
+                                st.text(raw if raw.strip() else "(rien lu par l'OCR)")
+                        finally:
+                            if debug_converted_path:
+                                os.unlink(debug_converted_path)
 
                     result = process_document(
                         tmp_path,
