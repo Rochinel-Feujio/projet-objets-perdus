@@ -18,7 +18,13 @@ from storage import save_document
 from zones import read_zones
 
 
-def process_document(image_path: str, debug: bool = False) -> dict:
+def analyze_document(image_path: str, debug: bool = False) -> dict:
+    """Exécute tout le pipeline de détection (prétraitement -> OCR ->
+    classification -> extraction -> validation) SANS rien enregistrer en
+    base. Utile quand on veut juste lire un document (ex. pré-remplir un
+    formulaire de déclaration de perte à partir d'une ancienne photo) sans
+    créer une entrée dans la table `documents` (réservée aux documents
+    effectivement retrouvés)."""
     # 1. Prétraitement : détection du contour + correction de perspective
     # (ou redressement simple en repli), amélioration du contraste.
     image, _gray = load_and_clean(image_path)
@@ -79,11 +85,7 @@ def process_document(image_path: str, debug: bool = False) -> dict:
             f"(netteté : {sharpness:.0f}/80 recommandé) — reprends la photo si possible.",
         )
 
-    # 7. Enregistrement
-    doc_id = save_document(fields, result.confidence, alerts, image_path)
-
     return {
-        "id": doc_id,
         "type_document": result.label,
         "confidence": result.confidence,
         "scores_detail": result.scores,
@@ -92,6 +94,31 @@ def process_document(image_path: str, debug: bool = False) -> dict:
         "nettete": round(sharpness, 1),
         "floue": blurry,
     }
+
+
+def process_document(
+    image_path: str,
+    debug: bool = False,
+    user_id: int = None,
+    finder_contact: str = None,
+) -> dict:
+    """analyze_document() puis enregistrement en base (table `documents`,
+    réservée aux documents effectivement retrouvés). `user_id` identifie la
+    personne qui a retrouvé le document (si connectée) et `finder_contact`
+    est le moyen de la recontacter, affiché sur l'écran de détail via
+    "voir les coordonnées"."""
+    analysis = analyze_document(image_path, debug=debug)
+
+    doc_id = save_document(
+        analysis["champs"],
+        analysis["confidence"],
+        analysis["alertes"],
+        image_path,
+        user_id=user_id,
+        finder_contact=finder_contact,
+    )
+
+    return {"id": doc_id, **analysis}
 
 
 def print_result(result: dict):

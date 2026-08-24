@@ -1,18 +1,31 @@
-# Module de détection automatique des documents — Prototype v1
+# Findici — Module de détection automatique des documents — Prototype v1
 
 Système de gestion des objets perdus et retrouvés. Ce prototype prend une
 photo de document administratif camerounais en entrée (CNI, récépissé,
 passeport, acte de naissance, diplôme, permis de conduire) et produit en
 sortie une donnée structurée et validée, enregistrée en base.
 
-Deux flux, dans deux onglets de l'interface Streamlit :
+L'application est organisée en 5 écrans (une fois connecté·e), accessibles
+depuis la barre de navigation :
 
-- **🔍 J'ai retrouvé un document** : dépôt d'une photo -> détection +
-  extraction automatique (flux décrit ci-dessous).
-- **📢 J'ai perdu un document** : pas de photo (le document est perdu) —
+- **🏠 Accueil** : fil des documents retrouvés récemment (recherche par nom
+  ou type de document, consultable par tout le monde).
+- **📢 Déclarer perdu** : pas de photo obligatoire (le document est perdu) —
   la personne renseigne ce qu'elle en connaît (type, nom, numéro si elle s'en
-  souvient...) et ses coordonnées. Voir "Rapprochement déclarations ⟷
-  documents retrouvés" plus bas.
+  souvient...) et ses coordonnées. Possibilité d'utiliser une **ancienne
+  photo** du document pour pré-remplir automatiquement le formulaire (la
+  photo n'est pas enregistrée comme document retrouvé). Voir "Rapprochement
+  déclarations ⟷ documents retrouvés" plus bas.
+- **🔍 Déclarer trouvé** : dépôt d'une photo -> détection + extraction
+  automatique (flux décrit ci-dessous), avec une **saisie manuelle** en
+  repli si la détection automatique échoue ("on ne sait jamais").
+- **🗂️ Mes déclarations** : tableau de bord personnel (onglets Perdus /
+  Trouvés) listant les déclarations et documents de la personne connectée.
+- **👤 Profil** : informations du compte et déconnexion.
+
+Un document affiché sur l'écran "Accueil" ou dans "Mes déclarations" peut
+être ouvert en détail, avec un bouton **"Voir les coordonnées"** qui révèle
+le moyen de contact de la personne qui l'a retrouvé.
 
 ## Pourquoi une approche "sans dataset" pour cette v1
 
@@ -37,8 +50,8 @@ changer l'architecture globale — voir section "Évolution vers un CNN".
 
 ```
 document_detector/
-├── main.py            # point d'entrée : orchestre tout le pipeline
-├── app.py              # interface Streamlit (2 onglets : retrouvé / perdu)
+├── main.py            # point d'entrée : analyze_document() (pipeline sans écriture) + process_document() (pipeline + enregistrement)
+├── app.py              # interface Streamlit Findici (routeur à 5 écrans + connexion)
 ├── config.py           # types de documents, mots-clés, formats de numéros
 ├── preprocessing.py    # redressement, réduction du bruit (OpenCV)
 ├── ocr.py               # lecture du texte (Tesseract)
@@ -46,13 +59,33 @@ document_detector/
 ├── extractor.py          # extraction des champs (nom, numéro, dates...)
 ├── zones.py               # lecture OCR par zones (mise en page connue)
 ├── validator.py            # contrôle de cohérence avant enregistrement
-├── storage.py               # SQLite (prototype) : documents + déclarations + rapprochement
+├── storage.py               # SQLite (prototype) : comptes, documents, déclarations, rapprochement
 ├── tests/
 │   ├── test_pipeline.py            # tests unitaires (classification, extraction, validation)
-│   ├── test_storage.py             # tests unitaires (rapprochement déclarations ⟷ documents)
+│   ├── test_storage.py             # tests unitaires (comptes, rapprochement, listes)
 │   └── generate_sample_images.py   # génère des images de test (gabarits texte)
 └── requirements.txt
 ```
+
+## Comptes utilisateurs et tableau de bord personnel
+
+L'accès à l'application nécessite un compte (création directe depuis l'écran
+de connexion : nom, email, téléphone, mot de passe). Le compte sert à :
+
+- pré-remplir vos coordonnées dans les formulaires de déclaration ;
+- associer les documents retrouvés et les déclarations de perte à votre
+  compte, pour les retrouver dans **"Mes déclarations"** ;
+- afficher un moyen de contact ("Voir les coordonnées") aux personnes qui
+  retrouvent leur document dans le fil "Accueil".
+
+⚠️ **Authentification de prototype** : les mots de passe sont hachés
+(PBKDF2-HMAC-SHA256 salé, `storage._hash_password`) mais il n'y a **aucune
+vérification d'email**, aucune limitation du nombre de tentatives de
+connexion, aucune politique de robustesse du mot de passe au-delà d'une
+longueur minimale (6 caractères), et aucune récupération de mot de passe
+oublié. À remplacer par un vrai système d'authentification (bcrypt/argon2,
+confirmation par email, limitation de débit...) avant tout usage en
+production.
 
 ## Déclaration de perte et rapprochement automatique
 
@@ -133,7 +166,8 @@ validation. Les déclarations de perte (onglet "perdu") sont dans la table
 
 ```bash
 # Tests unitaires (classification, extraction, validation, rapprochement
-# déclarations <-> documents — pas besoin d'image)
+# déclarations <-> documents, comptes utilisateurs, listes personnelles —
+# pas besoin d'image)
 python3 -m pytest tests/ -v
 
 # Génère des images de test (gabarits texte) puis teste le pipeline complet
@@ -175,6 +209,19 @@ de vraies photos**, à faire dès que possible.
   document scanné. Pas encore de notification automatique (email/SMS) quand
   une correspondance apparaît après coup — pour l'instant, le rapprochement
   n'est affiché qu'au moment où l'une des deux parties utilise l'interface.
+- Comptes utilisateurs : voir les limites détaillées dans la section
+  "Comptes utilisateurs et tableau de bord personnel" ci-dessus (pas de
+  vérification d'email, pas de récupération de mot de passe...).
+- Le fil "Accueil" et le bouton "Voir les coordonnées" exposent le contact
+  (téléphone) de la personne qui a retrouvé le document à **toute personne
+  connectée**, sans vérification préalable qu'elle est bien la propriétaire
+  légitime — acceptable pour un prototype, à encadrer (ex. vérification
+  d'identité, messagerie interne anonymisée) avant un déploiement réel.
+- La saisie manuelle sur l'écran "Déclarer trouvé" (repli si la détection
+  automatique échoue) enregistre les documents avec `confidence = 1.0` et
+  une alerte explicite ("Saisie manuelle") plutôt qu'un score OCR réel — à
+  ne pas confondre avec une confiance de détection automatique lors de
+  l'analyse des données.
 
 ## Évolution vers un CNN (v2)
 
