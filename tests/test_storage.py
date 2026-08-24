@@ -25,6 +25,7 @@ from storage import (
     list_user_documents,
     list_user_declarations,
     get_document,
+    export_all_data,
 )
 
 
@@ -242,6 +243,49 @@ def test_list_user_documents_and_declarations():
         my_decls = list_user_declarations(user_id, db_path=db_path)
         assert len(my_decls) == 1
         assert my_decls[0]["type_document"] == "PASSEPORT"
+    finally:
+        os.unlink(db_path)
+
+
+def test_export_all_data_includes_everything_but_no_password_fields():
+    db_path = _tmp_db()
+    try:
+        user_id = create_user("Backup Tester", "backup@example.com", "motdepasse123", db_path=db_path)
+        save_document(
+            fields={"type_document": "CNI", "nom": "BACKUP DOC"},
+            confidence=0.9,
+            alerts=[],
+            source_image="photo.jpg",
+            db_path=db_path,
+            user_id=user_id,
+        )
+        save_declaration(
+            type_document="PASSEPORT",
+            fields={"type_document": "PASSEPORT", "nom": "BACKUP DECL"},
+            lieu_perte="Douala",
+            date_perte="2026-08-01",
+            contact_nom="Backup Tester",
+            contact_telephone="690000000",
+            contact_email="",
+            db_path=db_path,
+            user_id=user_id,
+        )
+
+        export = export_all_data(db_path=db_path)
+        assert "exported_at" in export
+        assert len(export["documents"]) == 1
+        assert export["documents"][0]["fields"]["nom"] == "BACKUP DOC"
+        assert len(export["declarations"]) == 1
+        assert export["declarations"][0]["fields"]["nom"] == "BACKUP DECL"
+        assert len(export["users"]) == 1
+        assert export["users"][0]["email"] == "backup@example.com"
+        assert "password_hash" not in export["users"][0]
+        assert "password_salt" not in export["users"][0]
+
+        # Doit être sérialisable en JSON tel quel (c'est l'usage réel : bouton
+        # de téléchargement dans l'écran Profil).
+        import json
+        json.dumps(export, ensure_ascii=False)
     finally:
         os.unlink(db_path)
 

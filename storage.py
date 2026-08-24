@@ -451,3 +451,35 @@ def get_user(user_id: int, db_path: str = DB_PATH):
             users_table.select().where(users_table.c.id == user_id)
         ).mappings().first()
     return _public_user(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Export / sauvegarde manuelle : utile surtout en stockage SQLite local (pas
+# de sauvegarde automatique) — un bouton dans l'écran Profil télécharge le
+# résultat de cette fonction en JSON. Les mots de passe (hash + sel) ne sont
+# jamais inclus, même hachés — ce n'est qu'une sauvegarde des données, pas
+# un export permettant de se reconnecter ailleurs.
+# ---------------------------------------------------------------------------
+
+def export_all_data(db_path: str = DB_PATH) -> dict:
+    """Exporte tout le contenu de la base (documents, déclarations, comptes
+    sans informations d'authentification) en un dict directement
+    sérialisable en JSON."""
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        doc_rows = conn.execute(
+            documents_table.select().order_by(documents_table.c.id)
+        ).mappings().all()
+        decl_rows = conn.execute(
+            declarations_table.select().order_by(declarations_table.c.id)
+        ).mappings().all()
+        user_rows = conn.execute(
+            users_table.select().order_by(users_table.c.id)
+        ).mappings().all()
+
+    return {
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "documents": [_row_to_document(r) for r in doc_rows],
+        "declarations": [_row_to_declaration(r) for r in decl_rows],
+        "users": [_public_user(r) for r in user_rows],
+    }

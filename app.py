@@ -5,9 +5,11 @@ utilisateurs + fil des documents retrouvés + tableau de bord personnel.
 Déployé sur Streamlit Community Cloud — voir README.md.
 """
 
+import json
 import os
 import tempfile
 import urllib.parse
+from datetime import datetime
 
 import cv2
 import streamlit as st
@@ -26,6 +28,7 @@ from storage import (
     list_user_documents,
     list_user_declarations,
     get_document,
+    export_all_data,
 )
 
 
@@ -1030,6 +1033,33 @@ def screen_profil():
         f'<div class="cd-profile-row"><span>Email</span><strong>{user["email"]}</strong></div>'
         f'<div class="cd-profile-row"><span>Téléphone</span>'
         f'<strong>{user.get("telephone") or "non renseigné"}</strong></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="cd-card">', unsafe_allow_html=True)
+    st.markdown("##### 📥 Sauvegarde")
+    st.markdown(
+        "Cette application stocke ses données localement (fichier "
+        "`documents.db`) : rien n'est automatiquement sauvegardé ailleurs. "
+        "Télécharge régulièrement une copie de tous les documents, "
+        "déclarations et comptes (hors mots de passe) au format JSON."
+    )
+    export_data = export_all_data()
+    export_json = json.dumps(export_data, ensure_ascii=False, indent=2)
+    export_filename = f"findici_sauvegarde_{datetime.now().strftime('%Y-%m-%d_%H%M')}.json"
+    st.download_button(
+        "Exporter mes données (JSON)",
+        data=export_json,
+        file_name=export_filename,
+        mime="application/json",
+        key="export_backup",
+    )
+    st.markdown(
+        f'<p style="color:#5B5F58; font-size:0.85rem; margin-top:8px;">'
+        f"{len(export_data['documents'])} document(s), "
+        f"{len(export_data['declarations'])} déclaration(s), "
+        f"{len(export_data['users'])} compte(s) au total dans la base.</p>",
         unsafe_allow_html=True,
     )
     st.markdown("</div>", unsafe_allow_html=True)

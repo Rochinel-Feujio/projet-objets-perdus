@@ -98,6 +98,14 @@ le disque à chaque redémarrage/redéploiement — tout ce qui a été enregist
 depuis le dernier déploiement (comptes, documents, déclarations) serait
 alors perdu.
 
+**En restant en stockage local uniquement** (choix actuel du projet), pense
+à sauvegarder régulièrement : l'écran **Profil** propose un bouton
+"Exporter mes données (JSON)" qui télécharge une copie de tous les
+documents, déclarations et comptes (hors mots de passe) — utile avant une
+réinstallation, un changement de machine, ou simplement de temps en temps
+par précaution. Ce n'est qu'un export de sauvegarde, pas encore de fonction
+de restauration automatique.
+
 Pour une vraie persistance, l'application sait aussi se connecter à une
 base **PostgreSQL** hébergée : dès qu'une chaîne de connexion est fournie
 (voir ci-dessous), `storage.py` bascule automatiquement dessus — le reste
