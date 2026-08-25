@@ -175,6 +175,102 @@ oublié. À remplacer par un vrai système d'authentification (bcrypt/argon2,
 confirmation par email, limitation de débit...) avant tout usage en
 production.
 
+**Un seul compte par adresse email** : `create_user` refuse la création d'un
+second compte avec une adresse déjà utilisée (vérification en base avant
+insertion), et la colonne `email` de la table `users` porte en plus une
+contrainte `UNIQUE` côté base de données — même en cas d'accès concurrent
+(deux créations quasi simultanées), la base elle-même refuserait la
+deuxième insertion. Ce n'est donc pas juste un message d'erreur côté
+interface : il n'est pas possible de contourner cette règle.
+
+## Notifications par email
+
+À chaque événement important, l'application peut envoyer un email à une
+adresse de surveillance (typiquement celle de la personne qui administre le
+projet) : nouveau compte créé, nouvelle déclaration de perte enregistrée,
+nouveau document retrouvé enregistré (que ce soit via la détection
+automatique par photo ou la saisie manuelle). Voir `notifications.py`.
+
+Comme pour `DATABASE_URL`, cette fonctionnalité est **entièrement
+optionnelle** : si elle n'est pas configurée, l'application continue de
+fonctionner exactement comme avant, sans jamais rien casser — l'envoi
+d'email échoue silencieusement (aucune exception ne remonte jamais jusqu'à
+l'interface) et personne ne reçoit de notification, c'est tout.
+
+### Mise en place avec Gmail
+
+1. Sur le compte Gmail qui enverra les notifications, active la validation
+   en deux étapes (**Compte Google → Sécurité → Validation en deux
+   étapes**) — obligatoire pour l'étape suivante.
+2. Toujours dans **Sécurité**, cherche **"Mots de passe des applications"**
+   (ou va directement sur
+   [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)),
+   crée-en un nouveau (nom libre, ex. "Findici"). Google affiche un code de
+   16 caractères une seule fois — copie-le immédiatement.
+   ⚠️ **Ce n'est pas ton mot de passe Gmail habituel** : n'utilise jamais
+   ton vrai mot de passe ici, ni ailleurs dans ce projet.
+3. Dans `.streamlit/secrets.toml` (le même fichier que pour `DATABASE_URL` —
+   copie `.streamlit/secrets.toml.example` si ce n'est pas déjà fait),
+   renseigne :
+   ```toml
+   SMTP_HOST = "smtp.gmail.com"
+   SMTP_PORT = "465"
+   SMTP_USER = "ton.adresse@gmail.com"
+   SMTP_PASSWORD = "le-code-a-16-caracteres-de-l-etape-2"
+   NOTIFY_EMAIL = "ton.adresse@gmail.com"
+   ```
+   `NOTIFY_EMAIL` est l'adresse qui **reçoit** les notifications — elle peut
+   être différente de `SMTP_USER` (l'adresse qui les **envoie**) si tu
+   préfères recevoir les alertes ailleurs. `SMTP_FROM` (optionnel) permet de
+   personnaliser l'expéditeur affiché ; par défaut il reprend `SMTP_USER`.
+4. Une fois l'app déployée (Streamlit Community Cloud), ajoute les mêmes
+   clés dans les **Secrets** de l'application déployée (menu de l'app →
+   Settings → Secrets), en plus de `DATABASE_URL` si tu l'utilises déjà.
+5. Un autre fournisseur que Gmail fonctionne aussi tant qu'il propose un
+   accès SMTP (change simplement `SMTP_HOST`/`SMTP_PORT`).
+
+Sans ces clés (ni en secret Streamlit, ni en variable d'environnement),
+`notifications.is_configured()` renvoie `False` et aucune tentative d'envoi
+n'est faite.
+
+## Compte administrateur
+
+Un compte peut être marqué administrateur (colonne `is_admin` sur la table
+`users`). Un compte administrateur voit apparaître un onglet **"🛡️ Admin"**
+supplémentaire dans la navigation, avec :
+
+- des statistiques globales (nombre total de documents retrouvés, de
+  déclarations, de déclarations encore en attente, de comptes créés, et une
+  répartition par type de document) ;
+- la liste complète de tous les documents retrouvés, toutes les
+  déclarations et tous les comptes, tous utilisateurs confondus (pas
+  seulement les siens, contrairement à l'écran "Mes déclarations").
+
+Il n'y a **aucun moyen de devenir administrateur depuis l'interface** — la
+promotion se fait uniquement côté base de données, via `storage.set_admin`,
+pour éviter qu'un utilisateur ne se l'attribue lui-même.
+
+**En local (base SQLite)**, depuis la racine du projet :
+
+```bash
+python3 -c "import storage; storage.set_admin('eric.donnang@dsteams.com', True)"
+```
+
+**Sur une base en ligne (Supabase/Postgres)**, une fois `DATABASE_URL`
+configurée (voir "Base de données persistante" ci-dessus) et le compte déjà
+créé au moins une fois via l'écran de connexion de l'application : ouvre
+dans Supabase **SQL Editor** et exécute :
+
+```sql
+UPDATE users SET is_admin = 1 WHERE email = 'eric.donnang@dsteams.com';
+```
+
+(Le compte doit exister au préalable — crée-le depuis l'écran de connexion
+de l'application avant d'exécuter cette commande, sinon `UPDATE` ne trouve
+aucune ligne à modifier.) Pour redescendre un compte au rang d'utilisateur
+normal, refais la même commande avec `is_admin = 0`, ou en local
+`storage.set_admin('email', False)`.
+
 ## Déclaration de perte et rapprochement automatique
 
 Une personne qui a perdu un document n'a pas de photo à déposer. L'onglet
@@ -296,12 +392,22 @@ de vraies photos**, à faire dès que possible.
 - Le rapprochement déclaration ⟷ document retrouvé est une comparaison
   exacte (numéro identique, ou nom identique aux espaces/casse près) : pas de
   tolérance aux fautes de frappe côté déclarant ni aux erreurs d'OCR côté
-  document scanné. Pas encore de notification automatique (email/SMS) quand
-  une correspondance apparaît après coup — pour l'instant, le rapprochement
-  n'est affiché qu'au moment où l'une des deux parties utilise l'interface.
+  document scanné. Une notification par email est envoyée à chaque
+  déclaration/document enregistré (voir "Notifications par email"
+  ci-dessus), mais ce n'est pas une alerte de correspondance ciblée — le
+  rapprochement lui-même n'est affiché qu'au moment où l'une des deux
+  parties utilise l'interface.
 - Comptes utilisateurs : voir les limites détaillées dans la section
   "Comptes utilisateurs et tableau de bord personnel" ci-dessus (pas de
-  vérification d'email, pas de récupération de mot de passe...).
+  vérification d'email, pas de récupération de mot de passe...). Un compte
+  peut être promu administrateur (voir "Compte administrateur"), mais
+  uniquement via une commande exécutée en dehors de l'application — il n'y a
+  pas encore d'écran de gestion des rôles.
+- Notifications par email : simple envoi SMTP synchrone (pas de file
+  d'attente, pas de nouvelle tentative en cas d'échec temporaire) vers une
+  unique adresse de surveillance — suffisant pour un prototype à un seul
+  administrateur, à faire évoluer (file d'attente, plusieurs destinataires)
+  si le nombre d'événements ou d'administrateurs augmente.
 - Le fil "Accueil" et le bouton "Voir les coordonnées" exposent le contact
   (téléphone) de la personne qui a retrouvé le document à **toute personne
   connectée**, sans vérification préalable qu'elle est bien la propriétaire

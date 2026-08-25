@@ -70,6 +70,7 @@ users_table = Table(
     Column("password_hash", Text, nullable=False),
     Column("password_salt", Text, nullable=False),
     Column("created_at", Text, nullable=False),
+    Column("is_admin", Integer, nullable=False, server_default="0"),
 )
 
 
@@ -98,6 +99,16 @@ def _database_url():
     return os.environ.get("DATABASE_URL")
 
 
+# Valeur par défaut à utiliser quand une colonne manquante est ajoutée à une
+# table déjà existante (ALTER TABLE ADD COLUMN) — sans ça, une colonne
+# NOT NULL comme `is_admin` se retrouverait NULL sur les lignes déjà
+# présentes. SQLite et Postgres remplissent tous les deux automatiquement
+# les lignes existantes avec cette valeur par défaut lors d'un ADD COLUMN.
+_COLUMN_DEFAULTS_FOR_MIGRATION = {
+    "is_admin": "0",
+}
+
+
 def _ensure_schema(engine):
     """Crée les tables manquantes (metadata.create_all, portable
     SQLite/Postgres) puis ajoute les colonnes manquantes sur des tables déjà
@@ -112,8 +123,12 @@ def _ensure_schema(engine):
             if col.name in existing_cols:
                 continue
             type_sql = "INTEGER" if isinstance(col.type, Integer) else "TEXT"
+            default = _COLUMN_DEFAULTS_FOR_MIGRATION.get(col.name)
+            default_sql = f" DEFAULT {default}" if default is not None else ""
             with engine.begin() as conn:
-                conn.execute(sa.text(f"ALTER TABLE {table.name} ADD COLUMN {col.name} {type_sql}"))
+                conn.execute(
+                    sa.text(f"ALTER TABLE {table.name} ADD COLUMN {col.name} {type_sql}{default_sql}")
+                )
 
 
 @lru_cache(maxsize=None)
@@ -390,6 +405,7 @@ def _public_user(row) -> dict:
         "nom": row["nom"],
         "email": row["email"],
         "telephone": row["telephone"],
+        "is_admin": bool(row["is_admin"]) if row["is_admin"] is not None else False,
     }
 
 
@@ -422,9 +438,25 @@ def create_user(nom: str, email: str, password: str, telephone: str = "", db_pat
                 password_hash=hash_hex,
                 password_salt=salt_hex,
                 created_at=datetime.now().isoformat(timespec="seconds"),
+                is_admin=0,
             )
         )
         return result.inserted_primary_key[0]
+
+
+def set_admin(email: str, is_admin: bool = True, db_path: str = DB_PATH) -> bool:
+    """Promeut (ou rétrograde) un compte administrateur, par email. Renvoie
+    True si un compte correspondant a été trouvé et mis à jour, False sinon
+    (par exemple si le compte n'a pas encore été créé)."""
+    email_norm = (email or "").strip().lower()
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        result = conn.execute(
+            users_table.update()
+            .where(users_table.c.email == email_norm)
+            .values(is_admin=1 if is_admin else 0)
+        )
+        return result.rowcount > 0
 
 
 def authenticate_user(email: str, password: str, db_path: str = DB_PATH):
@@ -451,6 +483,72 @@ def get_user(user_id: int, db_path: str = DB_PATH):
             users_table.select().where(users_table.c.id == user_id)
         ).mappings().first()
     return _public_user(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Administration : réservé aux comptes avec is_admin=True (promotion faite
+# hors de l'app, via set_admin() — voir README, section "Compte
+# administrateur"). Permet de voir l'ensemble du système, tous utilisateurs
+# confondus, plus quelques statistiques globales.
+# ---------------------------------------------------------------------------
+
+def list_all_declarations(db_path: str = DB_PATH):
+    """Toutes les déclarations de perte, tous utilisateurs confondus
+    (réservé à l'écran Admin — list_user_declarations() est la version
+    filtrée pour un utilisateur normal)."""
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        rows = conn.execute(
+            declarations_table.select().order_by(declarations_table.c.created_at.desc())
+        ).mappings().all()
+    return [_row_to_declaration(row) for row in rows]
+
+
+def list_all_users(db_path: str = DB_PATH):
+    """Tous les comptes (vue publique, sans mot de passe) — réservé à
+    l'écran Admin."""
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        rows = conn.execute(users_table.select().order_by(users_table.c.id)).mappings().all()
+    return [_public_user(row) for row in rows]
+
+
+def get_admin_stats(db_path: str = DB_PATH) -> dict:
+    """Statistiques globales pour le tableau de bord administrateur :
+    volumes totaux et répartition par type de document."""
+    engine = _engine_for(db_path)
+    with engine.begin() as conn:
+        total_documents = conn.execute(
+            sa.select(sa.func.count()).select_from(documents_table)
+        ).scalar_one()
+        total_declarations = conn.execute(
+            sa.select(sa.func.count()).select_from(declarations_table)
+        ).scalar_one()
+        pending_declarations = conn.execute(
+            sa.select(sa.func.count())
+            .select_from(declarations_table)
+            .where(declarations_table.c.statut == "en_attente")
+        ).scalar_one()
+        total_users = conn.execute(
+            sa.select(sa.func.count()).select_from(users_table)
+        ).scalar_one()
+        docs_by_type = conn.execute(
+            sa.select(documents_table.c.type_document, sa.func.count())
+            .group_by(documents_table.c.type_document)
+        ).all()
+        decls_by_type = conn.execute(
+            sa.select(declarations_table.c.type_document, sa.func.count())
+            .group_by(declarations_table.c.type_document)
+        ).all()
+
+    return {
+        "total_documents": total_documents,
+        "total_declarations": total_declarations,
+        "pending_declarations": pending_declarations,
+        "total_users": total_users,
+        "documents_by_type": {row[0]: row[1] for row in docs_by_type},
+        "declarations_by_type": {row[0]: row[1] for row in decls_by_type},
+    }
 
 
 # ---------------------------------------------------------------------------

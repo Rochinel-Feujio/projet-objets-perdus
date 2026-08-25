@@ -29,7 +29,12 @@ from storage import (
     list_user_declarations,
     get_document,
     export_all_data,
+    get_user,
+    list_all_declarations,
+    list_all_users,
+    get_admin_stats,
 )
+from notifications import send_notification
 
 
 def cv2_to_rgb(image):
@@ -435,11 +440,17 @@ NAV_ITEMS = [
     ("profil", "👤", "Profil"),
 ]
 
+ADMIN_NAV_ITEM = ("admin", "🛡️", "Admin")
+
 
 def render_nav():
-    cols = st.columns(len(NAV_ITEMS))
+    user = st.session_state.user
+    items = list(NAV_ITEMS)
+    if user and user.get("is_admin"):
+        items.append(ADMIN_NAV_ITEM)
+    cols = st.columns(len(items))
     current = st.session_state.screen
-    for col, (screen_key, icon, label) in zip(cols, NAV_ITEMS):
+    for col, (screen_key, icon, label) in zip(cols, items):
         with col:
             btn_type = "primary" if current == screen_key else "secondary"
             if st.button(f"{icon}\n{label}", key=f"nav_{screen_key}", use_container_width=True, type=btn_type):
@@ -504,7 +515,14 @@ def screen_login():
             else:
                 try:
                     user_id = create_user(nom, email, password, telephone)
-                    st.session_state.user = {"id": user_id, "nom": nom.strip(), "email": email.strip().lower(), "telephone": telephone.strip()}
+                    st.session_state.user = get_user(user_id)
+                    send_notification(
+                        "Findici — Nouveau compte créé",
+                        f"Nom : {nom.strip()}\n"
+                        f"Email : {email.strip().lower()}\n"
+                        f"Téléphone : {telephone.strip() or 'non renseigné'}\n"
+                        f"Date : {datetime.now().isoformat(timespec='seconds')}",
+                    )
                     goto("accueil")
                 except ValueError as e:
                     st.markdown(f'<div class="cd-alert">{e}</div>', unsafe_allow_html=True)
@@ -669,6 +687,14 @@ def screen_declarer_perdu():
                 "Vous serez identifié·e automatiquement si un document correspondant est retrouvé.</div>",
                 unsafe_allow_html=True,
             )
+            send_notification(
+                "Findici — Nouvelle déclaration de perte",
+                f"Déclaration n°{decl_id}\n"
+                f"Type : {DOC_LABELS.get(doc_code, doc_code)}\n"
+                f"Champs connus : {cleaned_fields}\n"
+                f"Lieu de la perte : {lieu_perte.strip() or 'non renseigné'}\n"
+                f"Contact : {contact_nom.strip()} / {contact_tel.strip()} / {contact_email.strip()}",
+            )
 
             document_matches = find_matching_documents(doc_code, fields_for_storage)
             if document_matches:
@@ -781,6 +807,14 @@ def screen_declarer_trouve():
                     os.unlink(tmp_path)
 
             if result:
+                send_notification(
+                    "Findici — Nouveau document trouvé",
+                    f"Document n°{result['id']}\n"
+                    f"Type : {result['type_document']}\n"
+                    f"Confiance : {result['confidence']:.0%}\n"
+                    f"Champs : {result['champs']}\n"
+                    f"Contact du/de la trouveur·euse : {finder_contact.strip() or 'non renseigné'}",
+                )
                 with col2:
                     icon = DOC_ICONS.get(result["type_document"], "📄")
                     st.markdown('<div class="cd-card">', unsafe_allow_html=True)
@@ -880,6 +914,13 @@ def screen_declarer_trouve():
                 st.markdown(
                     f'<div class="cd-success">✅ Document n°{doc_id} enregistré manuellement.</div>',
                     unsafe_allow_html=True,
+                )
+                send_notification(
+                    "Findici — Nouveau document trouvé (saisie manuelle)",
+                    f"Document n°{doc_id}\n"
+                    f"Type : {DOC_LABELS.get(doc_code, doc_code)}\n"
+                    f"Champs : {cleaned_fields}\n"
+                    f"Contact du/de la trouveur·euse : {finder_contact.strip() or 'non renseigné'}",
                 )
                 declaration_matches = find_matching_declarations(doc_code, fields_for_storage)
                 if declaration_matches:
@@ -1075,6 +1116,99 @@ def screen_profil():
 
 
 # ---------------------------------------------------------------------------
+# Écran : administration (réservé aux comptes is_admin) — vue d'ensemble de
+# tout ce qui se passe dans le système, tous utilisateurs confondus.
+# ---------------------------------------------------------------------------
+def screen_admin():
+    render_header("Administration", compact=True)
+    render_nav()
+
+    user = st.session_state.user
+    if not user or not user.get("is_admin"):
+        st.markdown(
+            '<div class="cd-alert">Accès réservé aux administrateurs.</div>',
+            unsafe_allow_html=True,
+        )
+        render_footer()
+        return
+
+    stats = get_admin_stats()
+
+    st.markdown('<div class="cd-card">', unsafe_allow_html=True)
+    st.markdown("##### 📊 Vue d'ensemble")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Documents trouvés", stats["total_documents"])
+    col2.metric("Déclarations", stats["total_declarations"])
+    col3.metric("— dont en attente", stats["pending_declarations"])
+    col4.metric("Comptes", stats["total_users"])
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    col_docs, col_decls = st.columns(2)
+    with col_docs:
+        st.markdown('<div class="cd-card">', unsafe_allow_html=True)
+        st.markdown("##### Documents par type")
+        if stats["documents_by_type"]:
+            for type_code, count in sorted(stats["documents_by_type"].items(), key=lambda kv: -kv[1]):
+                label = DOC_LABELS.get(type_code, type_code)
+                st.markdown(
+                    f'<div class="cd-field-row"><span class="cd-field-label">{label}</span>'
+                    f'<span class="cd-field-value">{count}</span></div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.markdown('<p style="color:#8A887F;">Aucun document pour l\'instant.</p>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with col_decls:
+        st.markdown('<div class="cd-card">', unsafe_allow_html=True)
+        st.markdown("##### Déclarations par type")
+        if stats["declarations_by_type"]:
+            for type_code, count in sorted(stats["declarations_by_type"].items(), key=lambda kv: -kv[1]):
+                label = DOC_LABELS.get(type_code, type_code)
+                st.markdown(
+                    f'<div class="cd-field-row"><span class="cd-field-label">{label}</span>'
+                    f'<span class="cd-field-value">{count}</span></div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.markdown('<p style="color:#8A887F;">Aucune déclaration pour l\'instant.</p>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    tab_docs, tab_decls, tab_users = st.tabs(["📄 Tous les documents", "📢 Toutes les déclarations", "👥 Tous les comptes"])
+
+    with tab_docs:
+        for doc in list_found_documents(limit=500):
+            label = DOC_LABELS.get(doc["type_document"], doc["type_document"])
+            nom = doc["fields"].get("nom") or "Nom non renseigné"
+            st.markdown(
+                f'<div class="cd-field-row"><span class="cd-field-label">#{doc["id"]} · {label} · {nom}</span>'
+                f'<span class="cd-field-value">{doc["created_at"]}</span></div>',
+                unsafe_allow_html=True,
+            )
+
+    with tab_decls:
+        for decl in list_all_declarations():
+            label = DOC_LABELS.get(decl["type_document"], decl["type_document"])
+            nom = decl["fields"].get("nom") or "Nom non renseigné"
+            st.markdown(
+                f'<div class="cd-field-row"><span class="cd-field-label">#{decl["id"]} · {label} · {nom} · {decl["statut"]}</span>'
+                f'<span class="cd-field-value">{decl["created_at"]}</span></div>',
+                unsafe_allow_html=True,
+            )
+
+    with tab_users:
+        for u in list_all_users():
+            role = "🛡️ admin" if u.get("is_admin") else "utilisateur"
+            st.markdown(
+                f'<div class="cd-field-row"><span class="cd-field-label">#{u["id"]} · {u["nom"]} · {u["email"]}</span>'
+                f'<span class="cd-field-value">{role}</span></div>',
+                unsafe_allow_html=True,
+            )
+
+    render_footer()
+
+
+# ---------------------------------------------------------------------------
 # Routeur
 # ---------------------------------------------------------------------------
 if st.session_state.user is None:
@@ -1091,5 +1225,7 @@ else:
         screen_mes()
     elif screen == "profil":
         screen_profil()
+    elif screen == "admin" and st.session_state.user.get("is_admin"):
+        screen_admin()
     else:
         screen_accueil()

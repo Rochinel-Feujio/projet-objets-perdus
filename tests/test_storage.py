@@ -26,6 +26,10 @@ from storage import (
     list_user_declarations,
     get_document,
     export_all_data,
+    set_admin,
+    list_all_declarations,
+    list_all_users,
+    get_admin_stats,
 )
 
 
@@ -286,6 +290,109 @@ def test_export_all_data_includes_everything_but_no_password_fields():
         # de téléchargement dans l'écran Profil).
         import json
         json.dumps(export, ensure_ascii=False)
+    finally:
+        os.unlink(db_path)
+
+
+def test_new_user_is_not_admin_by_default():
+    db_path = _tmp_db()
+    try:
+        user_id = create_user("Normal User", "normal@example.com", "motdepasse123", db_path=db_path)
+        user = authenticate_user("normal@example.com", "motdepasse123", db_path=db_path)
+        assert user["is_admin"] is False
+    finally:
+        os.unlink(db_path)
+
+
+def test_set_admin_promotes_and_demotes():
+    db_path = _tmp_db()
+    try:
+        create_user("Future Admin", "admin@example.com", "motdepasse123", db_path=db_path)
+
+        assert set_admin("admin@example.com", True, db_path=db_path) is True
+        user = authenticate_user("admin@example.com", "motdepasse123", db_path=db_path)
+        assert user["is_admin"] is True
+
+        assert set_admin("admin@example.com", False, db_path=db_path) is True
+        user = authenticate_user("admin@example.com", "motdepasse123", db_path=db_path)
+        assert user["is_admin"] is False
+
+        # Email inconnu : aucune ligne mise à jour.
+        assert set_admin("inconnu@example.com", True, db_path=db_path) is False
+    finally:
+        os.unlink(db_path)
+
+
+def test_list_all_declarations_and_users_across_accounts():
+    db_path = _tmp_db()
+    try:
+        uid1 = create_user("User One", "one@example.com", "motdepasse123", db_path=db_path)
+        uid2 = create_user("User Two", "two@example.com", "motdepasse123", db_path=db_path)
+
+        save_declaration(
+            type_document="CNI",
+            fields={"type_document": "CNI", "nom": "USER ONE"},
+            lieu_perte="Douala",
+            date_perte="2026-08-01",
+            contact_nom="User One",
+            contact_telephone="690000001",
+            contact_email="",
+            db_path=db_path,
+            user_id=uid1,
+        )
+        save_declaration(
+            type_document="PASSEPORT",
+            fields={"type_document": "PASSEPORT", "nom": "USER TWO"},
+            lieu_perte="Yaoundé",
+            date_perte="2026-08-02",
+            contact_nom="User Two",
+            contact_telephone="690000002",
+            contact_email="",
+            db_path=db_path,
+            user_id=uid2,
+        )
+
+        all_decls = list_all_declarations(db_path=db_path)
+        assert len(all_decls) == 2
+        assert {d["type_document"] for d in all_decls} == {"CNI", "PASSEPORT"}
+
+        all_users = list_all_users(db_path=db_path)
+        assert len(all_users) == 2
+        assert {u["email"] for u in all_users} == {"one@example.com", "two@example.com"}
+        assert all("password_hash" not in u for u in all_users)
+    finally:
+        os.unlink(db_path)
+
+
+def test_get_admin_stats_reflects_data():
+    db_path = _tmp_db()
+    try:
+        create_user("Stats User", "stats@example.com", "motdepasse123", db_path=db_path)
+        save_document(
+            fields={"type_document": "CNI", "nom": "STATS DOC"},
+            confidence=0.9,
+            alerts=[],
+            source_image="photo.jpg",
+            db_path=db_path,
+        )
+        save_declaration(
+            type_document="CNI",
+            fields={"type_document": "CNI", "nom": "STATS DECL"},
+            lieu_perte="Douala",
+            date_perte="2026-08-01",
+            contact_nom="Stats User",
+            contact_telephone="690000000",
+            contact_email="",
+            db_path=db_path,
+        )
+
+        stats = get_admin_stats(db_path=db_path)
+        assert stats["total_documents"] == 1
+        assert stats["total_declarations"] == 1
+        assert stats["pending_declarations"] == 1
+        assert stats["total_users"] == 1
+        assert stats["documents_by_type"] == {"CNI": 1}
+        assert stats["declarations_by_type"] == {"CNI": 1}
     finally:
         os.unlink(db_path)
 
