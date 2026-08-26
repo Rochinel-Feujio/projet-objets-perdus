@@ -13,6 +13,7 @@ from datetime import datetime
 
 import cv2
 import streamlit as st
+import streamlit.components.v1 as components
 
 from main import process_document, analyze_document
 from pdf_input import pdf_first_page_to_image
@@ -33,6 +34,7 @@ from storage import (
     list_all_declarations,
     list_all_users,
     get_admin_stats,
+    using_persistent_db,
 )
 from notifications import send_notification
 
@@ -62,6 +64,73 @@ st.set_page_config(
     page_icon="🇨🇲",
     layout="centered",
 )
+
+
+def _inject_pwa_head_tags():
+    """Injecte le lien vers le manifest PWA + les balises d'icône iOS dans le
+    vrai <head> de la page, pour permettre "Ajouter à l'écran d'accueil"
+    (Safari/Chrome mobile) avec une icône/nom personnalisés plutôt que ceux
+    par défaut de Streamlit.
+
+    st.markdown()/st.html() passent par DOMPurify, qui retire les balises
+    <link> — on utilise donc un composant HTML (non « iframé » séparément
+    du DOM, d'après la doc Streamlit) exécutant du JavaScript qui manipule
+    directement window.parent.document.head. Idempotent (vérifie un
+    marqueur avant d'agir) car Streamlit ré-exécute ce script à chaque
+    interaction.
+
+    ⚠️ Support EXPÉRIMENTAL : un bug documenté de Streamlit Community Cloud
+    peut faire persister le nom/l'icône "Streamlit" par défaut lors de
+    l'ajout à l'écran d'accueil, malgré cette injection — voir README.md,
+    section "Application mobile (Ajouter à l'écran d'accueil)"."""
+    components.html(
+        """
+        <script>
+        (function() {
+            var doc = window.parent.document;
+            if (doc.getElementById('findici-pwa-tags')) { return; }
+            var marker = doc.createElement('meta');
+            marker.id = 'findici-pwa-tags';
+            marker.name = 'findici-pwa-tags';
+            doc.head.appendChild(marker);
+
+            var manifest = doc.createElement('link');
+            manifest.rel = 'manifest';
+            manifest.href = 'app/static/manifest.json';
+            doc.head.appendChild(manifest);
+
+            var appleIcon = doc.createElement('link');
+            appleIcon.rel = 'apple-touch-icon';
+            appleIcon.href = 'app/static/apple-touch-icon.png';
+            doc.head.appendChild(appleIcon);
+
+            var themeColor = doc.createElement('meta');
+            themeColor.name = 'theme-color';
+            themeColor.content = '#007A33';
+            doc.head.appendChild(themeColor);
+
+            var appleCapable = doc.createElement('meta');
+            appleCapable.name = 'apple-mobile-web-app-capable';
+            appleCapable.content = 'yes';
+            doc.head.appendChild(appleCapable);
+
+            var appleTitle = doc.createElement('meta');
+            appleTitle.name = 'apple-mobile-web-app-title';
+            appleTitle.content = 'Findici';
+            doc.head.appendChild(appleTitle);
+
+            var appleStatusBar = doc.createElement('meta');
+            appleStatusBar.name = 'apple-mobile-web-app-status-bar-style';
+            appleStatusBar.content = 'black-translucent';
+            doc.head.appendChild(appleStatusBar);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+_inject_pwa_head_tags()
 
 # ---------------------------------------------------------------------------
 # Design : palette inspirée du drapeau camerounais (identique au prototype de
@@ -1080,12 +1149,21 @@ def screen_profil():
 
     st.markdown('<div class="cd-card">', unsafe_allow_html=True)
     st.markdown("##### 📥 Sauvegarde")
-    st.markdown(
-        "Cette application stocke ses données localement (fichier "
-        "`documents.db`) : rien n'est automatiquement sauvegardé ailleurs. "
-        "Télécharge régulièrement une copie de tous les documents, "
-        "déclarations et comptes (hors mots de passe) au format JSON."
-    )
+    if using_persistent_db():
+        st.markdown(
+            "Cette application est connectée à une base de données en ligne "
+            "persistante (PostgreSQL) : les données restent enregistrées "
+            "même en cas de redémarrage de l'application. Tu peux tout de "
+            "même télécharger une copie de tous les documents, déclarations "
+            "et comptes (hors mots de passe) au format JSON, par précaution."
+        )
+    else:
+        st.markdown(
+            "Cette application stocke ses données localement (fichier "
+            "`documents.db`) : rien n'est automatiquement sauvegardé ailleurs. "
+            "Télécharge régulièrement une copie de tous les documents, "
+            "déclarations et comptes (hors mots de passe) au format JSON."
+        )
     export_data = export_all_data()
     export_json = json.dumps(export_data, ensure_ascii=False, indent=2)
     export_filename = f"findici_sauvegarde_{datetime.now().strftime('%Y-%m-%d_%H%M')}.json"

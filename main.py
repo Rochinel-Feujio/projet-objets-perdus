@@ -11,6 +11,9 @@ Usage :
 import os
 import sys
 import json
+import tempfile
+
+import cv2
 
 from preprocessing import load_and_clean, get_aspect_ratio, is_blurry
 from ocr import extract_text, normalize_text
@@ -20,6 +23,8 @@ from validator import validate
 from storage import save_document
 from zones import read_zones
 from pdf_input import is_pdf, pdf_first_page_to_image
+from ai_vision import is_configured as ai_vision_configured, extract_fields_with_ai
+from config import AI_FALLBACK_CONFIDENCE_THRESHOLD, AI_EXCLUDED_FIELDS
 
 
 def analyze_document(image_path: str, debug: bool = False) -> dict:
@@ -91,8 +96,53 @@ def analyze_document(image_path: str, debug: bool = False) -> dict:
         # 5. Extraction des champs
         fields = extract_fields(result.doc_type, raw_text, normalized_text, zone_texts)
 
-        # 6. Validation
+        # 5bis. Complément IA de vision (optionnel — voir ai_vision.py). On ne
+        # sollicite l'IA que si elle est configurée ET que l'OCR seul semble
+        # peu fiable ici (au moins un champ manquant, ou confiance de
+        # classification sous le seuil) — pas systématiquement, pour ne pas
+        # gaspiller inutilement le quota gratuit sur des documents déjà bien
+        # lus par Tesseract. On lui envoie l'image déjà corrigée (redressée,
+        # contraste amélioré) plutôt que la photo brute, pour lui donner la
+        # meilleure chance de bien lire.
+        ai_alerts = []
+        if ai_vision_configured():
+            ai_field_keys = [k for k in fields if k not in AI_EXCLUDED_FIELDS]
+            missing_fields = [k for k in ai_field_keys if not fields.get(k)]
+            if missing_fields or result.confidence < AI_FALLBACK_CONFIDENCE_THRESHOLD:
+                ai_result = None
+                ai_image_path = None
+                try:
+                    fd, ai_image_path = tempfile.mkstemp(suffix=".jpg")
+                    os.close(fd)
+                    cv2.imwrite(ai_image_path, image)
+                    ai_result = extract_fields_with_ai(ai_image_path, result.label, ai_field_keys)
+                finally:
+                    if ai_image_path is not None:
+                        try:
+                            os.unlink(ai_image_path)
+                        except OSError:
+                            pass
+
+                if debug:
+                    print("-" * 60)
+                    print(f"IA de vision sollicitée (champs manquants : {missing_fields or 'aucun'}, "
+                          f"confiance classification : {result.confidence:.0%})")
+                    print(f"Résultat IA : {ai_result}")
+                    print("-" * 60)
+
+                if ai_result:
+                    for key, value in ai_result["champs"].items():
+                        if value and not fields.get(key):
+                            fields[key] = value
+                            ai_alerts.append(
+                                f"Champ « {key} » complété par l'IA de vision (Mistral) — à vérifier."
+                            )
+                    for remark in ai_result["remarques"]:
+                        ai_alerts.append(f"IA de vision : {remark}")
+
+        # 6. Validation (sur les champs éventuellement complétés par l'IA ci-dessus)
         alerts = validate(result.doc_type, fields)
+        alerts.extend(ai_alerts)
         if blurry:
             alerts.insert(
                 0,

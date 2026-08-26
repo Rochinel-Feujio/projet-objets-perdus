@@ -83,6 +83,58 @@ def test_pdf_first_page_to_image_multi_page_reports_count():
         os.unlink(pdf_path)
 
 
+def _make_pdf_with_embedded_photo(width: int, height: int, page_points: tuple) -> str:
+    """Simule un PDF généré par une appli mobile de "scan" : une seule image
+    plaquée en pleine page, avec une taille de page en points PDF qui NE
+    correspond PAS forcément à la résolution réelle de la photo (`width` x
+    `height` en pixels) — c'est justement ce écart qui, avant correction,
+    provoquait un agrandissement par interpolation à la conversion."""
+    img = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(img)
+    draw.text((10, 10), "PHOTO NETTE", fill="black", font=_font(24))
+    fd_img, img_path = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd_img)
+    img.save(img_path, quality=95)
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=page_points[0], height=page_points[1])
+    page.insert_image(page.rect, filename=img_path)
+
+    fd_pdf, pdf_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd_pdf)
+    doc.save(pdf_path)
+    doc.close()
+    os.unlink(img_path)
+    return pdf_path
+
+
+def test_pdf_first_page_to_image_uses_native_resolution_not_upscaled():
+    """Une page PDF réduite à une seule photo plaquée en pleine page doit
+    renvoyer cette photo à sa résolution native, PAS un rendu agrandi par
+    interpolation à `dpi` — repéré sur un vrai récépissé/CNI envoyé par un
+    utilisateur : la page PDF déclarait une taille en points correspondant
+    à ~72 dpi, et un rendu à 220 dpi agrandissait la photo d'un facteur ~3
+    sans ajouter le moindre détail, détruisant la netteté perçue par la
+    détection de flou et gênant l'OCR."""
+    # Photo native 1200x800, mais page PDF minuscule (100x67 points) —
+    # un rendu à 220 dpi de cette page donnerait une image bien plus petite
+    # que la photo native si on utilisait le moteur de rendu classique.
+    pdf_path = _make_pdf_with_embedded_photo(1200, 800, (100, 67))
+    try:
+        image_path, page_count = pdf_first_page_to_image(pdf_path, dpi=220)
+        try:
+            assert page_count == 1
+            with Image.open(image_path) as im:
+                # Résolution native de la photo conservée, pas un rendu à
+                # ~220/72 * 100 = ~306 px de large.
+                assert im.width == 1200
+                assert im.height == 800
+        finally:
+            os.unlink(image_path)
+    finally:
+        os.unlink(pdf_path)
+
+
 def _make_cni_like_pdf() -> str:
     """PDF d'une page contenant un gabarit texte "CNI" (même principe que
     tests/generate_sample_images.py), pour vérifier que analyze_document()

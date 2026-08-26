@@ -51,20 +51,27 @@ changer l'architecture globale — voir section "Évolution vers un CNN".
 ```
 document_detector/
 ├── main.py            # point d'entrée : analyze_document() (pipeline sans écriture) + process_document() (pipeline + enregistrement)
-├── app.py              # interface Streamlit Findici (routeur à 5 écrans + connexion)
+├── app.py              # interface Streamlit Findici (routeur à écrans + connexion + admin)
 ├── pdf_input.py         # conversion PDF -> image (1ère page) pour réutiliser le même pipeline
-├── config.py             # types de documents, mots-clés, formats de numéros
+├── config.py             # types de documents, mots-clés, formats de numéros, seuils IA
 ├── preprocessing.py       # redressement, réduction du bruit (OpenCV)
 ├── ocr.py                  # lecture du texte (Tesseract)
 ├── classifier.py            # identification du type de document (règles)
 ├── extractor.py              # extraction des champs (nom, numéro, dates...)
 ├── zones.py                   # lecture OCR par zones (mise en page connue)
 ├── validator.py                 # contrôle de cohérence avant enregistrement
-├── storage.py                    # SQLite (prototype) : comptes, documents, déclarations, rapprochement
+├── ai_vision.py                  # complément IA de vision optionnel (Mistral) — voir "IA de vision"
+├── storage.py                     # SQLite ou Postgres (voir "Base de données persistante") : comptes, documents, déclarations, rapprochement
+├── notifications.py                # notifications par email optionnelles — voir "Notifications par email"
+├── .streamlit/
+│   └── secrets.toml.example          # modèle de configuration (base de données, SMTP, IA) — à copier en secrets.toml
 ├── tests/
 │   ├── test_pipeline.py            # tests unitaires (classification, extraction, validation)
-│   ├── test_storage.py             # tests unitaires (comptes, rapprochement, listes)
+│   ├── test_storage.py             # tests unitaires (comptes, rapprochement, listes, admin)
 │   ├── test_pdf_input.py           # tests unitaires (conversion PDF -> image, pipeline sur PDF)
+│   ├── test_ai_vision.py           # tests unitaires du complément IA de vision (client simulé)
+│   ├── test_main_ai_fallback.py    # tests d'intégration du branchement IA dans analyze_document()
+│   ├── test_notifications.py       # tests unitaires des notifications par email
 │   └── generate_sample_images.py   # génère des images de test (gabarits texte)
 └── requirements.txt
 ```
@@ -86,6 +93,85 @@ aucune différence de traitement une fois converti.
 - Dépendance ajoutée : `PyMuPDF` (voir `requirements.txt`) — pas de binaire
   système à installer séparément (contrairement à `pdf2image`/`poppler`),
   ce qui simplifie le déploiement sur Streamlit Community Cloud.
+
+## IA de vision (optionnel, gratuit)
+
+Le pipeline de détection reste, par défaut, entièrement local et gratuit :
+prétraitement d'image (OpenCV) + OCR (Tesseract) + règles de classification/
+extraction écrites à la main (voir `classifier.py`/`extractor.py`). Aucune
+IA générative n'est nécessaire pour que l'application fonctionne.
+
+En complément facultatif, `ai_vision.py` peut solliciter un modèle de
+vision (Mistral AI) pour **compléter** la lecture quand l'OCR local semble
+peu fiable sur un document donné — jamais pour la remplacer. Mistral a été
+choisi plutôt que Google Gemini (initialement envisagé) parce que le palier
+gratuit de Google AI Studio s'est révélé inaccessible depuis le Cameroun au
+moment de la mise en place (blocage constaté malgré un pays officiellement
+supporté par Google — probablement une vérification de compte/IP), alors
+que Mistral AI (entreprise française) n'a pas cette restriction :
+
+- **Déclenchement ciblé** (`main.analyze_document`) : l'IA n'est appelée que
+  si elle est configurée ET qu'au moins un champ n'a pas pu être lu par
+  l'OCR, ou que la confiance de classification du document est faible
+  (sous `AI_FALLBACK_CONFIDENCE_THRESHOLD`, 60 % par défaut — voir
+  `config.py`). Sur un document déjà bien lu par Tesseract, l'IA n'est
+  jamais sollicitée : ça évite de gaspiller inutilement le quota gratuit.
+- **Complément, jamais d'écrasement** : l'IA ne remplit que les champs
+  restés vides après l'OCR — un champ déjà lu n'est jamais remplacé
+  silencieusement par sa réponse, pour rester transparent sur l'origine de
+  chaque donnée. Chaque champ complété par l'IA est signalé par une alerte
+  explicite ("Champ « ... » complété par l'IA de vision (Mistral) — à
+  vérifier."), à vérifier manuellement comme n'importe quelle alerte du
+  pipeline.
+- **Auto-évaluation intégrée** : au-delà de la simple lecture, le modèle
+  reçoit pour instruction de signaler lui-même les incohérences qu'il
+  repère sur l'image (date d'expiration antérieure à la date de naissance,
+  numéro visiblement mal formaté, texte flou ou coupé...) — ces remarques
+  sont ajoutées telles quelles aux alertes du document, même sur des champs
+  que l'OCR avait déjà correctement lus. C'est ce comportement de
+  vérification active, au-delà d'une lecture brute one-shot, qui en fait un
+  petit "agent" plutôt qu'un simple appel d'API.
+- **Jamais bloquant** : si la clé n'est pas configurée, si le paquet
+  `mistralai` n'est pas installé, ou si l'appel échoue pour une raison
+  quelconque (réseau, quota dépassé, réponse mal formée...),
+  `ai_vision.extract_fields_with_ai()` renvoie toujours `None` — l'analyse
+  se termine normalement avec le seul résultat de l'OCR, sans jamais
+  planter ni bloquer l'utilisateur.
+
+### Mise en place avec Mistral AI — gratuit, sans carte bancaire
+
+1. Va sur [console.mistral.ai](https://console.mistral.ai), crée un compte
+   (email + numéro de téléphone à vérifier par SMS — **aucune carte
+   bancaire requise**).
+2. Dans les paramètres de facturation ("Billing" / "Plans"), active le
+   palier **"Experiment"** (gratuit) si ce n'est pas déjà fait par défaut.
+3. Va dans **"API Keys"** → crée une nouvelle clé → copie-la immédiatement
+   (elle ne sera plus jamais réaffichée en clair).
+4. Dans `.streamlit/secrets.toml` (le même fichier que pour
+   `DATABASE_URL`/`SMTP_*`), ajoute :
+   ```toml
+   MISTRAL_API_KEY = "ta_cle_generee"
+   ```
+5. Une fois l'app déployée, ajoute la même clé dans les **Secrets** de
+   l'app sur Streamlit Community Cloud.
+6. Installe la dépendance si ce n'est pas déjà fait (déjà listée dans
+   `requirements.txt`) :
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+Sans `MISTRAL_API_KEY` configurée, l'application continue de fonctionner
+exactement comme avant, uniquement avec l'OCR local — cette fonctionnalité
+n'est jamais requise pour utiliser le projet.
+
+⚠️ Le palier gratuit "Experiment" de Mistral a un **quota limité** (visible
+dans ton tableau de bord une fois connecté, sur la page des limites) et les
+données envoyées via ce palier peuvent être utilisées par Mistral pour
+améliorer ses modèles (voir leurs conditions) — à garder en tête si des
+documents contenant des données personnelles y transitent. Suffisant pour
+un prototype avec peu d'utilisateurs ; au-delà, il faudrait passer à un
+palier payant (toujours très bon marché, mais plus une carte bancaire à
+ajouter, et sans cette clause de réutilisation des données).
 
 ## Base de données persistante (PostgreSQL)
 
@@ -117,26 +203,48 @@ change dans son fonctionnement.
 [Supabase](https://supabase.com) propose un hébergement PostgreSQL gratuit
 amplement suffisant pour ce prototype :
 
-1. Crée un compte sur supabase.com et un nouveau projet (choisis une
-   région proche, ex. Europe, et note le mot de passe de base de données
-   que tu définis à la création — il ne sera plus jamais réaffiché en
-   clair).
-2. Dans le projet, va dans **Project Settings → Database → Connection
-   string**, onglet **URI**. Tu obtiens une chaîne du type :
-   `postgresql://postgres:[MOT-DE-PASSE]@db.xxxxxxxxxxxx.supabase.co:5432/postgres`
-3. Remplace `postgresql://` par `postgresql+psycopg2://` en tout début de
+1. Va sur [supabase.com](https://supabase.com) → **"Start your project"**
+   (ou "Sign in" si tu reviens) → connecte-toi avec GitHub, Google, ou une
+   adresse email (avec vérification par email dans ce dernier cas).
+2. Une fois connecté, clique **"New project"**. Renseigne :
+   - **Organization** : laisse "Personal" (proposé par défaut) ;
+   - **Project name** : ce que tu veux, ex. "findici" ;
+   - **Database password** : génère-le automatiquement (bouton dédié) ou
+     choisis le tien — **note-le tout de suite quelque part de sûr**, il ne
+     sera plus jamais réaffiché en clair ensuite (ce n'est pas ton mot de
+     passe de connexion à supabase.com, c'est celui de la base elle-même) ;
+   - **Region** : une région proche, ex. Europe (Frankfurt/Paris/London
+     selon ce qui est proposé) ;
+   - **Pricing plan** : le plan **Free** est déjà sélectionné par défaut,
+     ne change rien ici.
+   Clique **"Create new project"** et patiente 1 à 2 minutes le temps que
+   Supabase provisionne la base.
+3. Une fois le projet prêt, clique le bouton **"Connect"** en haut du
+   tableau de bord du projet. Un panneau s'ouvre avec plusieurs onglets de
+   type de connexion — choisis **"Transaction pooler"** (pas "Direct
+   connection") et copie la chaîne **URI** affichée. Elle ressemble à :
+   `postgresql://postgres.xxxxxxxxxxxx:[MOT-DE-PASSE]@aws-0-xxxxx.pooler.supabase.co:6543/postgres`
+
+   ⚠️ Prends bien le **Transaction pooler**, pas la "Direct connection" :
+   depuis début 2024, Supabase a rendu ses connexions directes
+   (`db.xxxx.supabase.co`) accessibles uniquement en IPv6, sauf à payer une
+   option IPv4 — et Streamlit Community Cloud ne garantit pas de connexion
+   sortante en IPv6. Le "Transaction pooler" (port `6543`), lui, fonctionne
+   normalement en IPv4 et convient très bien à ce type d'application web.
+4. Remplace `postgresql://` par `postgresql+psycopg2://` en tout début de
    chaîne (indique à SQLAlchemy quel pilote Python utiliser) et
-   `[MOT-DE-PASSE]` par ton vrai mot de passe.
-4. En local, copie `.streamlit/secrets.toml.example` en
+   `[MOT-DE-PASSE]` par le mot de passe de base de données noté à l'étape 2
+   (pas ton mot de passe de compte Supabase).
+5. En local, copie `.streamlit/secrets.toml.example` en
    `.streamlit/secrets.toml` (même dossier) et colle-y cette chaîne comme
    valeur de `DATABASE_URL`. **Ce fichier `secrets.toml` ne doit jamais
    être commité** (il est déjà dans `.gitignore` — seul le `.example`,
    sans vraie valeur, est versionné).
-5. Relance `streamlit run app.py` : l'application crée automatiquement les
+6. Relance `streamlit run app.py` : l'application crée automatiquement les
    tables nécessaires (documents, déclarations, utilisateurs) sur Supabase
    au premier démarrage, et toutes les données créées ensuite y sont
    persistées.
-6. Le jour où l'app est déployée sur Streamlit Community Cloud, ajoute la
+7. Le jour où l'app est déployée sur Streamlit Community Cloud, ajoute la
    même clé `DATABASE_URL` dans les **Secrets** de l'application (menu de
    l'app déployée → Settings → Secrets) — même format TOML que le fichier
    local.
@@ -418,6 +526,13 @@ de vraies photos**, à faire dès que possible.
   une alerte explicite ("Saisie manuelle") plutôt qu'un score OCR réel — à
   ne pas confondre avec une confiance de détection automatique lors de
   l'analyse des données.
+- IA de vision (voir "IA de vision" ci-dessus) : fonctionnalité optionnelle,
+  désactivée tant que `MISTRAL_API_KEY` n'est pas configurée. Le palier
+  gratuit "Experiment" de Mistral a un quota limité (adapté à un prototype à
+  faible volume, pas à un usage à grande échelle) ; elle complète l'OCR
+  champ par champ mais ne relit pas le document dans son ensemble comme le
+  ferait un modèle entraîné spécifiquement dessus (voir "Évolution vers un
+  CNN (v2)" ci-dessous pour cette étape ultérieure).
 
 ## Évolution vers un CNN (v2)
 
@@ -431,6 +546,76 @@ learning) :
    renfort pour les cas ambigus (CNI vs permis).
 3. Le reste du pipeline (`extractor.py`, `validator.py`, `storage.py`)
    reste inchangé.
+
+Le complément IA de vision (`ai_vision.py`, voir plus haut) est une étape
+intermédiaire plus rapide à mettre en place qu'un CNN entraîné sur mesure
+(aucun jeu de données à collecter/labelliser), mais les deux approches sont
+complémentaires à terme : un CNN reste plus rapide et moins coûteux à
+grande échelle une fois entraîné, tandis que l'IA de vision generative
+s'adapte instantanément à n'importe quel document sans entraînement
+préalable.
+
+## Application mobile (Ajouter à l'écran d'accueil)
+
+Streamlit ne permet pas de publier une vraie application native sur l'App
+Store ou le Google Play Store — ce serait un projet technique séparé
+(réécriture ou "emballage" de l'app avec un outil comme Capacitor, compte
+développeur Apple à 99 $/an, validation par Apple, maintenance de deux
+plateformes en plus du web). Ce n'est pas ce que fait ce prototype.
+
+En revanche, Findici peut être **ajouté à l'écran d'accueil** du téléphone
+(iOS Safari ou Android Chrome), ce qui donne une icône dédiée et un
+lancement plus rapide que de retaper l'URL à chaque fois :
+
+- **Safari (iPhone/iPad)** : ouvrir le lien de l'app → bouton de partage
+  (carré avec une flèche vers le haut) → **"Sur l'écran d'accueil"**.
+- **Chrome (Android)** : ouvrir le lien → menu ⋮ → **"Ajouter à l'écran
+  d'accueil"** (ou **"Installer l'application"** si Chrome le propose).
+
+Pour que cette icône soit personnalisée (logo et nom "Findici") plutôt que
+le logo Streamlit par défaut, l'app injecte un manifest PWA et des balises
+d'icône iOS (`static/manifest.json`, `static/icon-*.png`,
+`.streamlit/config.toml` avec `enableStaticServing = true`, et la fonction
+`_inject_pwa_head_tags()` dans `app.py`).
+
+⚠️ **Support expérimental** : ça fonctionne correctement en local (vérifié),
+mais des utilisateurs de Streamlit Community Cloud ont documenté un bug non
+résolu côté Streamlit où le nom/l'icône reviennent à "Streamlit" par défaut
+une fois l'app ajoutée à l'écran d'accueil depuis le lien hébergé — Streamlit
+lui-même indique ne pas supporter officiellement les PWA (son architecture
+repose sur une connexion WebSocket permanente entre le serveur Python et le
+navigateur, ce qui limite ce qu'une PWA peut faire hors-ligne). Si l'icône
+personnalisée ne s'affiche pas correctement sur le lien en ligne, "Ajouter à
+l'écran d'accueil" fonctionne quand même — juste avec l'icône par défaut.
+
+## Vitesse et disponibilité (Streamlit Community Cloud)
+
+Deux causes distinctes peuvent rendre l'app "lente", à ne pas confondre :
+
+**1. Mise en veille de l'app en ligne.** Streamlit Community Cloud (offre
+gratuite) met en veille toute application n'ayant reçu aucune visite depuis
+**12 heures**. La première visite qui suit réveille l'app, ce qui peut
+prendre de 30 secondes à 1-2 minutes (réinstallation des dépendances,
+redémarrage du serveur) — ce n'est pas un bug du code, c'est le
+fonctionnement normal de l'offre gratuite. Ça n'affecte que le lien en
+ligne, jamais l'exécution en local (`streamlit run app.py` sur ton PC).
+
+**2. Latence réseau vers la base de données en ligne.** Une fois connectée
+à Supabase (voir "Base de données persistante"), chaque connexion/action
+qui lit ou écrit en base fait un aller-retour réseau réel — contre un accès
+quasi instantané avec l'ancien fichier SQLite local. C'est un compromis
+inhérent au choix d'une base persistante hébergée, pas quelque chose que le
+code peut totalement supprimer ; ça se ressent davantage depuis une
+connexion internet plus lente ou plus loin géographiquement du centre de
+données choisi (Europe, dans la configuration Supabase de ce projet).
+
+Pour limiter l'effet de la mise en veille sur le lien en ligne, une option
+possible (non activée par défaut) est un déclencheur programmé qui visite
+périodiquement l'app pour la maintenir éveillée — voir la discussion
+Streamlit sur le sujet si tu veux mettre ça en place :
+https://discuss.streamlit.io/t/how-to-prevent-the-app-enter-the-sleep-mode/87959.
+Une simple requête HTTP ne suffit généralement pas (l'app ne la compte pas
+comme une vraie visite) — il faut une visite qui charge réellement la page.
 
 ## Déploiement (rappel du flux de travail)
 

@@ -99,6 +99,15 @@ def _database_url():
     return os.environ.get("DATABASE_URL")
 
 
+def using_persistent_db() -> bool:
+    """True si l'application est actuellement connectée à une base Postgres
+    persistante (DATABASE_URL configurée), False si elle utilise le repli
+    SQLite local. Utilisé par l'interface (écran Profil) pour afficher un
+    message adapté au backend réellement actif, plutôt qu'un message
+    toujours identique qui deviendrait trompeur une fois Postgres branché."""
+    return bool(_database_url())
+
+
 # Valeur par défaut à utiliser quand une colonne manquante est ajoutée à une
 # table déjà existante (ALTER TABLE ADD COLUMN) — sans ça, une colonne
 # NOT NULL comme `is_admin` se retrouverait NULL sur les lignes déjà
