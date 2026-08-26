@@ -1,0 +1,25 @@
+{
+  "name": "Findici — Documents Cameroun",
+  "short_name": "Findici",
+  "description": "Déclaration et restitution de documents administratifs perdus ou retrouvés au Cameroun.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#FAFAF8",
+  "theme_color": "#007A33",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "app/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "app/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+# Configuration Streamlit (non secrète — ce fichier EST versionné dans le
+# dépôt, contrairement à secrets.toml qui contient des identifiants).
+
+[server]
+# Nécessaire pour servir les fichiers du dossier static/ (manifest.json,
+# icônes) utilisés par le support "Ajouter à l'écran d'accueil" — voir
+# README.md, section "Application mobile (Ajouter à l'écran d'accueil)".
+enableStaticServing = true
