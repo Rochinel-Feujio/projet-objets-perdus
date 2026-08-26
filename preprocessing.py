@@ -6,20 +6,26 @@ détection de flou.
 
 import cv2
 import numpy as np
+import pytesseract
+from PIL import Image as _PILImage
 
 
 def load_and_clean(image_path: str):
     """Charge une image et applique un nettoyage complet.
 
-    Étapes : détection du contour du document + correction de perspective
-    (si un contour net à 4 coins est trouvé), sinon simple redressement de
-    l'inclinaison ; puis amélioration du contraste et réduction du bruit.
+    Étapes : correction d'une éventuelle rotation franche à 90/180/270°
+    (photo prise "de travers") ; détection du contour du document +
+    correction de perspective (si un contour net à 4 coins est trouvé),
+    sinon simple redressement de l'inclinaison ; puis amélioration du
+    contraste et réduction du bruit.
 
     Retourne un tuple (image_couleur_corrigee, image_niveaux_de_gris_ameliore).
     """
     image = cv2.imread(image_path)
     if image is None:
         raise FileNotFoundError(f"Impossible de lire l'image : {image_path}")
+
+    image = _correct_orientation(image)
 
     corrected, perspective_applied = _perspective_correct(image)
     if not perspective_applied:
@@ -31,6 +37,96 @@ def load_and_clean(image_path: str):
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 11
     )
     return corrected, gray
+
+
+# ---------------------------------------------------------------------------
+# Correction d'orientation : détecte si la photo a été prise "de travers"
+# (carte tenue en paysage au lieu de portrait, ou à l'envers) et la remet
+# dans le bon sens AVANT tout le reste. Sans cette étape, un document
+# correctement net peut donner un texte totalement incompréhensible en OCR
+# (lettres mélangées sans aucun sens) simplement parce qu'il est tourné à
+# 90° — un cas rencontré concrètement avec de vrais récépissés/CNI envoyés
+# en PDF par les utilisateurs.
+# ---------------------------------------------------------------------------
+
+_ORIENTATION_ROTATION_CODES = {
+    0: None,
+    90: cv2.ROTATE_90_CLOCKWISE,
+    180: cv2.ROTATE_180,
+    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+}
+
+
+def _rotate_by(image, angle: int):
+    code = _ORIENTATION_ROTATION_CODES[angle]
+    return image if code is None else cv2.rotate(image, code)
+
+
+def _orientation_score(image) -> int:
+    """Score une orientation candidate : plus il y a de mots plausibles
+    (>= 3 lettres, confiance Tesseract > 40) reconnus par une lecture OCR
+    rapide, plus le score est élevé. Une orientation correcte donne presque
+    toujours un score nettement supérieur aux 3 autres, car du texte à
+    l'envers ou tourné à 90° ne produit quasiment aucun mot reconnaissable.
+
+    On a délibérément écarté la détection d'orientation native de Tesseract
+    (`image_to_osd`) : testée sur de vraies photos de documents (peu de
+    texte, beaucoup de motifs/logos), elle s'est révélée peu fiable et
+    incohérente d'un appel à l'autre (résultat différent selon la seule
+    résolution de l'image, avec une confiance systématiquement très
+    faible). Compter les mots effectivement reconnus par un essai d'OCR
+    réel dans chaque orientation s'est montré beaucoup plus robuste en
+    pratique, aussi bien sur des images de test synthétiques que sur de
+    vraies photos de CNI/récépissés."""
+    try:
+        pil_image = _PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        data = pytesseract.image_to_data(
+            pil_image, lang="fra+eng", config="--psm 6", output_type=pytesseract.Output.DICT
+        )
+    except Exception:
+        return 0
+
+    score = 0
+    for text, conf in zip(data.get("text", []), data.get("conf", [])):
+        text = text.strip()
+        try:
+            conf = int(conf)
+        except (TypeError, ValueError):
+            continue
+        if conf > 40 and len(text) >= 3 and text.isalpha():
+            score += conf
+    return score
+
+
+def _correct_orientation(image):
+    """Détecte et corrige une rotation franche à 90/180/270°. Se limite
+    volontairement à ces 4 orientations : le redressement fin de quelques
+    degrés reste géré séparément par `_deskew`, plus bas.
+
+    Teste rapidement les 4 orientations sur une copie réduite de l'image
+    (pour rester rapide) et garde celle qui produit le plus de texte
+    reconnaissable, puis applique cette rotation à l'image en pleine
+    résolution. Si aucune orientation ne produit le moindre mot
+    reconnaissable (document très flou, endommagé, ou sans texte), on
+    renvoie l'image telle quelle plutôt que de tourner au hasard."""
+    h, w = image.shape[:2]
+    long_side = max(h, w)
+    if long_side == 0:
+        return image
+
+    scale = min(1.0, 1200 / long_side)
+    small = (
+        cv2.resize(image, (max(1, int(w * scale)), max(1, int(h * scale))), interpolation=cv2.INTER_AREA)
+        if scale < 1.0
+        else image
+    )
+
+    scores = {angle: _orientation_score(_rotate_by(small, angle)) for angle in _ORIENTATION_ROTATION_CODES}
+    best_angle = max(scores, key=scores.get)
+    if scores[best_angle] == 0:
+        return image
+
+    return _rotate_by(image, best_angle)
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,14 @@ DOCUMENT_TYPES = {
     "PASSEPORT": {
         "label": "Passeport",
         "formats": ["passport_page", "card"],
-        "keywords": ["passeport", "passport", "republic of cameroon"],
+        # "republic of cameroon" retiré : cet en-tête bilingue figure aussi sur
+        # la CNI ("RÉPUBLIQUE DU CAMEROUN / REPUBLIC OF CAMEROON"), donc il ne
+        # distingue pas un passeport d'une CNI — au contraire, il faisait
+        # basculer à tort des CNI mal lues par l'OCR vers "Passeport" (repéré
+        # sur un vrai récépissé/CNI envoyé par un utilisateur). "passeport"/
+        # "passport" + la détection MRZ restent des signaux fiables et propres
+        # au passeport.
+        "keywords": ["passeport", "passport"],
         "mrz_required_or_keyword": True,
         "exclude_keywords": [],
     },
@@ -83,6 +90,25 @@ MRZ_LINE_REGEX = r"[A-Z0-9<]{30,44}"
 # Validation des numéros connus.
 NIU_CNI_REGEX = r"\b\d{17}\b"
 RECEPISSE_REGEX = r"\b(AD|CE|ES|EN|NO|SU|LT|OU|NW|SW)[A-Z0-9]{18}\b"
-DATE_REGEX = r"\b(\d{2})[/\-](\d{2})[/\-](\d{4})\b"
+# Accepte "/", "-" ET "." comme séparateur : les vraies CNI camerounaises
+# utilisent souvent des dates au format "26.10.1965" (point), pas seulement
+# "/" ou "-" — un vrai récépissé/CNI envoyé par un utilisateur avait une date
+# de naissance parfaitement lisible par l'OCR ("26.10.1965") mais totalement
+# ignorée par l'extraction faute de séparateur reconnu.
+DATE_REGEX = r"\b(\d{2})[/\-.](\d{2})[/\-.](\d{4})\b"
 
 DB_PATH = "documents.db"
+
+# --- IA de vision en complément de l'OCR (optionnel — voir ai_vision.py) ---
+# On ne sollicite l'IA de vision que quand l'OCR local semble peu fiable
+# (confiance de classification sous ce seuil, ou au moins un champ non lu),
+# pas systématiquement — ça évite de gaspiller inutilement le quota gratuit
+# de l'API sur des documents déjà bien lus par Tesseract.
+AI_FALLBACK_CONFIDENCE_THRESHOLD = 0.6
+
+# Champs renvoyés par extractor.extract_fields() qu'il n'est pas pertinent
+# de demander à l'IA de vision : "type_document" est déjà connu (résultat de
+# la classification, pas quelque chose à lire sur l'image), "mrz" est un
+# artefact de lecture MRZ propre à l'OCR, et "categories"/"dates_detectees"
+# sont des listes — l'IA de vision ne renvoie ici que des champs texte.
+AI_EXCLUDED_FIELDS = {"type_document", "mrz", "categories", "dates_detectees"}

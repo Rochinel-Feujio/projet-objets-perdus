@@ -46,6 +46,28 @@ def test_extract_niu_cni():
     assert fields["date_naissance"] == "01/01/2000"
 
 
+def test_classify_cni_not_confused_with_passeport_by_bilingual_header():
+    # En-tête bilingue présent sur une vraie CNI camerounaise ("RÉPUBLIQUE DU
+    # CAMEROUN / REPUBLIC OF CAMEROON") : ne doit pas faire basculer la
+    # classification vers PASSEPORT juste parce que "republic of cameroon"
+    # apparaît dans le texte — repéré sur un vrai récépissé/CNI envoyé par un
+    # utilisateur, mal lu par l'OCR, où ce chevauchement de mots-clés faisait
+    # basculer à tort la classification vers "Passeport".
+    text = "republique du cameroun republic of cameroon nom prenoms sexe taille"
+    result = classify(image_ratio=1.60, ocr_text_normalized=text)
+    assert result.doc_type == "CNI", result.scores
+
+
+def test_extract_date_with_dot_separator():
+    # Les vraies CNI camerounaises utilisent souvent des dates au format
+    # "26.10.1965" (point) plutôt que "/" ou "-" — un vrai document envoyé
+    # par un utilisateur avait une date parfaitement lisible par l'OCR mais
+    # ignorée par l'extraction faute de séparateur reconnu.
+    raw = "NOM EXEMPLE\n12345678901234567\n26.10.1965"
+    fields = extract_fields("CNI", raw, raw.lower())
+    assert fields["date_naissance"] == "26/10/1965"
+
+
 def test_validate_flags_bad_niu():
     fields = {"type_document": "CNI", "numero": "123", "nom": "NOM EXEMPLE"}
     alerts = validate("CNI", fields)
