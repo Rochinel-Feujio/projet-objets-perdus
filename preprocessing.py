@@ -6,8 +6,8 @@ détection de flou.
 
 import cv2
 import numpy as np
-import pytesseract
-from PIL import Image as _PILImage
+
+from ocr import get_engine, DEFAULT_LANG
 
 
 def load_and_clean(image_path: str):
@@ -62,39 +62,38 @@ def _rotate_by(image, angle: int):
     return image if code is None else cv2.rotate(image, code)
 
 
-def _orientation_score(image) -> int:
+def _orientation_score(image) -> float:
     """Score une orientation candidate : plus il y a de mots plausibles
-    (>= 3 lettres, confiance Tesseract > 40) reconnus par une lecture OCR
+    (>= 3 lettres, confiance PaddleOCR > 0.4) reconnus par une lecture OCR
     rapide, plus le score est élevé. Une orientation correcte donne presque
     toujours un score nettement supérieur aux 3 autres, car du texte à
     l'envers ou tourné à 90° ne produit quasiment aucun mot reconnaissable.
 
     On a délibérément écarté la détection d'orientation native de Tesseract
-    (`image_to_osd`) : testée sur de vraies photos de documents (peu de
-    texte, beaucoup de motifs/logos), elle s'est révélée peu fiable et
-    incohérente d'un appel à l'autre (résultat différent selon la seule
-    résolution de l'image, avec une confiance systématiquement très
-    faible). Compter les mots effectivement reconnus par un essai d'OCR
-    réel dans chaque orientation s'est montré beaucoup plus robuste en
-    pratique, aussi bien sur des images de test synthétiques que sur de
-    vraies photos de CNI/récépissés."""
+    (`image_to_osd`) à l'époque où Tesseract était utilisé : testée sur de
+    vraies photos de documents (peu de texte, beaucoup de motifs/logos), elle
+    s'est révélée peu fiable et incohérente d'un appel à l'autre. Compter les
+    mots effectivement reconnus par un essai d'OCR réel dans chaque
+    orientation s'est montré beaucoup plus robuste en pratique — le même
+    principe est conservé avec PaddleOCR, qui réutilise le moteur déjà chargé
+    par ocr.py plutôt que d'en instancier un second."""
     try:
-        pil_image = _PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        data = pytesseract.image_to_data(
-            pil_image, lang="fra+eng", config="--psm 6", output_type=pytesseract.Output.DICT
-        )
+        engine = get_engine(DEFAULT_LANG)
+        results = engine.predict(image)
     except Exception:
-        return 0
+        return 0.0
 
-    score = 0
-    for text, conf in zip(data.get("text", []), data.get("conf", [])):
-        text = text.strip()
-        try:
-            conf = int(conf)
-        except (TypeError, ValueError):
+    score = 0.0
+    for res in results:
+        rec_texts = res.get("rec_texts") if isinstance(res, dict) else getattr(res, "rec_texts", None)
+        rec_scores = res.get("rec_scores") if isinstance(res, dict) else getattr(res, "rec_scores", None)
+        if not rec_texts:
             continue
-        if conf > 40 and len(text) >= 3 and text.isalpha():
-            score += conf
+        for i, text in enumerate(rec_texts):
+            text = text.strip()
+            conf = rec_scores[i] if rec_scores and i < len(rec_scores) else 0.0
+            if conf > 0.4 and len(text) >= 3 and text.isalpha():
+                score += conf
     return score
 
 
