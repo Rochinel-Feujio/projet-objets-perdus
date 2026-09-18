@@ -1,98 +1,126 @@
 """
-Extraction de texte par OCR (Tesseract).
+Extraction de texte par OCR (PaddleOCR).
+
+Anciennement basé sur Tesseract (voir historique git) : remplacé par
+PaddleOCR, un moteur par deep learning nettement plus robuste sur des
+photos réelles imparfaites (angle, flou, faible luminosité) — voir
+ocr_benchmark/RAPPORT_PaddleOCR_vs_Tesseract.md pour les chiffres qui ont
+motivé ce choix.
+
+Le reste du pipeline (classifier.py, zones.py, extractor.py, validator.py)
+n'a pas besoin de changer : extract_text(), normalize_text() et
+extract_text_normalized() gardent exactement la même signature qu'avant.
 """
 
-import os
 import unicodedata
 
+import cv2
 import numpy as np
-import pytesseract
 from PIL import Image
 
-# Sur Windows, Tesseract n'est pas toujours dans le PATH après installation.
-# On détecte automatiquement l'emplacement par défaut de l'installeur UB-Mannheim.
-# Sur le serveur Ubuntu (installé via apt), Tesseract est déjà dans le PATH et
-# ce bloc ne fait rien.
-_WINDOWS_DEFAULT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-if os.name == "nt" and os.path.isfile(_WINDOWS_DEFAULT_PATH):
-    pytesseract.pytesseract.tesseract_cmd = _WINDOWS_DEFAULT_PATH
-
-# Les documents camerounais sont bilingues (ex. "NOM/SURNAME") : lire avec
-# "fra" seul fait rater ou déformer les mots anglais (et inversement). "eng"
-# est déjà inclus par défaut dans le paquet tesseract-ocr, donc pas besoin de
-# rien installer de plus en combinant les deux.
-DEFAULT_LANG = "fra+eng"
+# PaddleOCR ne propose pas de combiner deux langues comme le "fra+eng" utilisé
+# avant avec Tesseract : un seul code de langue est utilisé par appel. "fr"
+# charge le modèle de reconnaissance pour l'alphabet latin élargi (accents
+# français inclus), qui reconnaît les caractères un par un plutôt que des
+# mots d'un dictionnaire figé — les mots anglais mélangés aux documents
+# camerounais bilingues (ex. "NOM/SURNAME") restent donc lisibles aussi.
+DEFAULT_LANG = "fr"
 
 # Taille cible du plus grand côté avant OCR : les photos de documents ont
 # souvent du texte petit. Un texte trop petit en pixels est la cause la plus
-# fréquente d'une lecture OCR incomplète — l'agrandir change beaucoup.
+# fréquente d'une lecture OCR incomplète — l'agrandir change beaucoup (vrai
+# pour un moteur par règles comme Tesseract, et toujours utile pour un
+# moteur par deep learning comme PaddleOCR).
 _MIN_LONG_SIDE = 1600
 
+# Un objet PaddleOCR charge des modèles de réseaux de neurones à sa création
+# (opération lente, ~quelques secondes) : on le crée une seule fois et on le
+# réutilise, plutôt que d'en recréer un à chaque appel d'extract_text().
+# Le tout premier appel télécharge aussi les modèles (quelques dizaines de
+# Mo) si nécessaire — connexion internet requise à ce moment-là seulement.
+_engine_cache = {}
 
-def _to_pil_image(image):
-    """Accepte soit un chemin de fichier (str), soit une image déjà en mémoire
-    (PIL.Image, ou tableau numpy au format OpenCV/BGR) — utile pour lire l'OCR
-    directement sur l'image déjà prétraitée (redressée, recadrée) plutôt que
-    sur le fichier original brut."""
+
+def get_engine(lang: str):
+    if lang not in _engine_cache:
+        from paddleocr import PaddleOCR
+
+        _engine_cache[lang] = PaddleOCR(
+            lang=lang,
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=True,
+        )
+    return _engine_cache[lang]
+
+
+def _to_bgr_array(image):
+    """Accepte soit un chemin de fichier (str), soit une image déjà en
+    mémoire (PIL.Image, ou tableau numpy déjà au format OpenCV/BGR utilisé
+    partout ailleurs dans le pipeline) — renvoie toujours un tableau numpy
+    BGR, le format attendu par PaddleOCR (comme OpenCV)."""
     if isinstance(image, str):
-        return Image.open(image)
+        loaded = cv2.imread(image)
+        if loaded is None:
+            raise ValueError(f"Impossible de lire l'image : {image}")
+        return loaded
     if isinstance(image, Image.Image):
-        return image
+        rgb = np.array(image.convert("RGB"))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     if isinstance(image, np.ndarray):
-        import cv2
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        return Image.fromarray(rgb)
+        return image
     raise TypeError(f"Type d'image non supporté pour l'OCR : {type(image)}")
 
 
-def _upscale_if_small(pil_image: Image.Image) -> Image.Image:
-    """Agrandit l'image si son plus grand côté est petit — Tesseract lit
-    nettement mieux du texte fin quand il a plus de pixels à analyser."""
-    w, h = pil_image.size
+def _upscale_if_small(img_bgr):
+    """Agrandit l'image si son plus grand côté est petit — un texte fin a
+    besoin de plus de pixels pour être bien reconnu, quel que soit le
+    moteur OCR utilisé."""
+    h, w = img_bgr.shape[:2]
     long_side = max(w, h)
     if long_side >= _MIN_LONG_SIDE or long_side == 0:
-        return pil_image
+        return img_bgr
     scale = _MIN_LONG_SIDE / long_side
     new_size = (int(w * scale), int(h * scale))
-    return pil_image.resize(new_size, Image.LANCZOS)
+    return cv2.resize(img_bgr, new_size, interpolation=cv2.INTER_LANCZOS4)
 
 
 def extract_text(image, lang: str = DEFAULT_LANG, psm: str = None, upscale: bool = True) -> str:
     """Lit le texte visible sur l'image. `image` peut être un chemin de
-    fichier ou une image déjà chargée (PIL ou tableau numpy).
+    fichier ou une image déjà chargée (PIL ou tableau numpy BGR).
 
-    `psm` (page segmentation mode Tesseract) :
-      - Si précisé (ex. "7" = une seule ligne, utilisé par zones.py pour de
-        petits recadrages de champ) : une seule passe avec cette valeur.
-      - Si None (lecture globale d'un document entier) : essaie plusieurs
-        modes de segmentation ("3" = mise en page automatique, "6" = bloc de
-        texte uniforme) et garde le résultat le plus long — une image de
-        document a une mise en page trop variée pour qu'un seul mode soit
-        toujours le meilleur, et un mode inadapté est la cause la plus
-        fréquente d'un texte "incomplet" (des blocs entiers sautés).
+    `psm` : conservé uniquement pour compatibilité avec les appels existants
+    (zones.py notamment, qui distinguait "une seule ligne" vs "bloc de texte
+    MRZ" pour Tesseract). PaddleOCR détecte lui-même les lignes de texte
+    quelle que soit la mise en page — ce paramètre n'a donc plus d'effet ici,
+    mais est laissé dans la signature pour ne rien casser ailleurs dans le
+    pipeline.
 
     `upscale` : mettre à False si l'appelant a déjà agrandi l'image lui-même
     (ex. zones.py fait déjà un resize x2 sur ses petits recadrages) — cumuler
-    les deux agrandissements ralentit énormément l'OCR pour rien, voire nuit
-    à la lecture (flou d'interpolation) sans gain de précision."""
-    pil_image = _to_pil_image(image)
+    les deux agrandissements ralentit l'OCR pour rien."""
+    img_bgr = _to_bgr_array(image)
     if upscale:
-        pil_image = _upscale_if_small(pil_image)
+        img_bgr = _upscale_if_small(img_bgr)
 
-    if psm is not None:
-        config = f"--psm {psm}"
-        return pytesseract.image_to_string(pil_image, lang=lang, config=config)
+    engine = get_engine(lang)
+    results = engine.predict(img_bgr)
 
-    best_text = ""
-    for candidate_psm in ("3", "6"):
-        config = f"--psm {candidate_psm}"
-        try:
-            text = pytesseract.image_to_string(pil_image, lang=lang, config=config)
-        except pytesseract.TesseractError:
+    lines = []
+    for res in results:
+        rec_texts = res.get("rec_texts") if isinstance(res, dict) else getattr(res, "rec_texts", None)
+        rec_boxes = res.get("rec_boxes") if isinstance(res, dict) else getattr(res, "rec_boxes", None)
+        if not rec_texts:
             continue
-        if len(text.strip()) > len(best_text.strip()):
-            best_text = text
-    return best_text
+        if rec_boxes is not None and len(rec_boxes) == len(rec_texts):
+            # Trie par position verticale (haut -> bas) pour reconstituer un
+            # ordre de lecture cohérent, comme le ferait une lecture humaine.
+            order = sorted(range(len(rec_texts)), key=lambda i: rec_boxes[i][1])
+            lines.extend(rec_texts[i] for i in order)
+        else:
+            lines.extend(rec_texts)
+
+    return "\n".join(lines)
 
 
 def normalize_text(text: str) -> str:

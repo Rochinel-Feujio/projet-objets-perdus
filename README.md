@@ -55,7 +55,7 @@ document_detector/
 ├── pdf_input.py         # conversion PDF -> image (1ère page) pour réutiliser le même pipeline
 ├── config.py             # types de documents, mots-clés, formats de numéros, seuils IA
 ├── preprocessing.py       # redressement, réduction du bruit (OpenCV)
-├── ocr.py                  # lecture du texte (Tesseract)
+├── ocr.py                  # lecture du texte (PaddleOCR)
 ├── classifier.py            # identification du type de document (règles)
 ├── extractor.py              # extraction des champs (nom, numéro, dates...)
 ├── zones.py                   # lecture OCR par zones (mise en page connue)
@@ -97,7 +97,7 @@ aucune différence de traitement une fois converti.
 ## IA de vision (optionnel, gratuit)
 
 Le pipeline de détection reste, par défaut, entièrement local et gratuit :
-prétraitement d'image (OpenCV) + OCR (Tesseract) + règles de classification/
+prétraitement d'image (OpenCV) + OCR (PaddleOCR) + règles de classification/
 extraction écrites à la main (voir `classifier.py`/`extractor.py`). Aucune
 IA générative n'est nécessaire pour que l'application fonctionne.
 
@@ -114,7 +114,7 @@ que Mistral AI (entreprise française) n'a pas cette restriction :
   si elle est configurée ET qu'au moins un champ n'a pas pu être lu par
   l'OCR, ou que la confiance de classification du document est faible
   (sous `AI_FALLBACK_CONFIDENCE_THRESHOLD`, 60 % par défaut — voir
-  `config.py`). Sur un document déjà bien lu par Tesseract, l'IA n'est
+  `config.py`). Sur un document déjà bien lu par PaddleOCR, l'IA n'est
   jamais sollicitée : ça évite de gaspiller inutilement le quota gratuit.
 - **Complément, jamais d'écrasement** : l'IA ne remplit que les champs
   restés vides après l'OCR — un champ déjà lu n'est jamais remplacé
@@ -413,14 +413,17 @@ le nom, recherche floue sur le numéro).
 ## Installation sur le serveur Ubuntu
 
 ```bash
-# Dépendances système (OCR)
-sudo apt update
-sudo apt install -y tesseract-ocr tesseract-ocr-fra
-
-# Dépendances Python
+# Dépendances Python (l'OCR, PaddleOCR, ne nécessite aucun paquet système
+# apt — contrairement à l'ancien Tesseract)
 cd document_detector
 pip install -r requirements.txt
 ```
+
+Au tout premier lancement, PaddleOCR télécharge automatiquement ses modèles
+de reconnaissance (quelques dizaines de Mo) depuis Internet — une connexion
+réseau est donc nécessaire à ce moment-là uniquement ; les modèles sont
+ensuite mis en cache localement et les lancements suivants n'en ont plus
+besoin.
 
 ## Utilisation
 

@@ -1,5 +1,6 @@
 opencv-python-headless>=4.9
-pytesseract>=0.3.10
+paddlepaddle>=3.0
+paddleocr>=3.7
 Pillow>=10.0
 numpy>=1.26
 streamlit>=1.35
