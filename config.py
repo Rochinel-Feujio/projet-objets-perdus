@@ -18,7 +18,28 @@ DOCUMENT_TYPES = {
     "CNI": {
         "label": "Carte Nationale d'Identité",
         "formats": ["card"],
-        "keywords": ["carte nationale", "identite", "republique du cameroun", "sexe", "taille"],
+        # La CNI camerounaise a connu 5 générations successives depuis 1980
+        # (voir GUIDE_TESSERACT_INSTALLATION.md pour le contexte OCR, et la
+        # discussion de conception pour le détail historique) : carte bilingue
+        # en carton "RÉPUBLIQUE UNIE DU CAMEROUN" (1972-84), puis "REPUBLIC OF
+        # CAMEROON" (1984-1999), carte informatisée Teslin (1999/2008-2016),
+        # carte biométrique à puce Gemalto (2016-2025), et la nouvelle carte
+        # biométrique Augentic (depuis 2025). L'en-tête republicain change de
+        # libellé selon l'époque : chaque tuple ci-dessous est un groupe
+        # d'alternatives (une seule doit correspondre pour compter comme un
+        # "mot-clé trouvé"), pour rester robuste sur les 5 générations sans
+        # diluer le score d'une carte qui n'en utilise qu'une seule.
+        "keywords": [
+            "carte nationale",
+            ("identite", "identity"),
+            (
+                "republique du cameroun",       # 1984 -> aujourd'hui (Teslin, biométrique 2016, Augentic 2025)
+                "republique unie du cameroun",  # 1972-1984
+                "republique federale du cameroun",  # 1964-1972
+            ),
+            "sexe",
+            "taille",
+        ],
         "exclude_keywords": ["permis", "categorie", "diplome", "acte de naissance"],
     },
     "RECEPISSE": {

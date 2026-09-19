@@ -52,6 +52,18 @@ def _detect_mrz(ocr_text_normalized: str) -> bool:
     return len(hits) >= 1 or "p<cmr" in ocr_text_normalized.replace(" ", "")
 
 
+def _keyword_hit(keyword, ocr_text_normalized: str) -> bool:
+    """Un mot-clé de config.py est soit une chaîne simple, soit un tuple
+    d'alternatives (ex. les différents libellés d'en-tête républicain que la
+    CNI a portés selon l'époque — voir CNI["keywords"] dans config.py) : dans
+    ce dernier cas, UNE SEULE alternative suffit à compter comme trouvée. Ça
+    permet de reconnaître plusieurs générations d'un même document sans
+    diluer le score (le nombre total de "mots-clés" ne change pas)."""
+    if isinstance(keyword, (tuple, list)):
+        return any(alt in ocr_text_normalized for alt in keyword)
+    return keyword in ocr_text_normalized
+
+
 def _detect_category_table(ocr_text_normalized: str) -> bool:
     # Recherche grossière d'un tableau de catégories de permis (A, B, C, D, E proches les uns des autres)
     letters_found = sum(1 for l in ["a", "b", "c", "d", "e"] if re.search(rf"\b{l}\b", ocr_text_normalized))
@@ -75,13 +87,13 @@ def classify(image_ratio: float, ocr_text_normalized: str) -> ClassificationResu
 
         # Signal mots-clés (poids 0.5, proportionnel au nombre de mots-clés trouvés)
         keywords = cfg["keywords"]
-        found = sum(1 for kw in keywords if kw in ocr_text_normalized)
+        found = sum(1 for kw in keywords if _keyword_hit(kw, ocr_text_normalized))
         if keywords:
             score += 0.5 * (found / len(keywords))
 
         # Pénalité si des mots-clés d'exclusion apparaissent (ex. "permis" trouvé alors qu'on évalue CNI)
         exclude = cfg.get("exclude_keywords", [])
-        excluded_found = sum(1 for kw in exclude if kw in ocr_text_normalized)
+        excluded_found = sum(1 for kw in exclude if _keyword_hit(kw, ocr_text_normalized))
         score -= 0.3 * excluded_found
 
         # Signaux spécifiques

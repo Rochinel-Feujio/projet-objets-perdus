@@ -5,6 +5,7 @@ utilisateurs + fil des documents retrouvés + tableau de bord personnel.
 Déployé sur Streamlit Community Cloud — voir README.md.
 """
 
+import html
 import json
 import os
 import tempfile
@@ -37,6 +38,22 @@ from storage import (
     using_persistent_db,
 )
 from notifications import send_notification
+
+
+def _esc(value) -> str:
+    """Échappe une valeur avant de l'insérer dans un bloc HTML brut
+    (`st.markdown(..., unsafe_allow_html=True)`). Indispensable pour tout
+    texte qui vient de l'OCR ou d'une saisie utilisateur (nom, numéro, champ
+    MRZ...) : un caractère `<` ou `>` non échappé y est interprété comme une
+    balise HTML par le navigateur — repéré concrètement sur le champ MRZ
+    d'un passeport (`P<CMRNOM<<PRENOM<<<...`), qui cassait entièrement
+    l'affichage du résultat (`InvalidCharacterError` côté navigateur) avant
+    correction. Ne pas confondre avec le contenu Markdown/HTML volontaire de
+    l'application elle-même (icônes, classes CSS), qui ne doit pas passer
+    par cette fonction."""
+    if value is None:
+        return ""
+    return html.escape(str(value))
 
 
 def cv2_to_rgb(image):
@@ -639,9 +656,9 @@ def screen_accueil():
         with col_info:
             st.markdown(
                 f'<div class="cd-feed-item" style="border-bottom:none; padding-bottom:0;">'
-                f'<div><div class="cd-feed-title">{icon} {nom}</div>'
-                f'<div class="cd-feed-sub">Retrouvé le {doc["created_at"]}</div>'
-                f'<span class="cd-chip">{label}</span></div></div>',
+                f'<div><div class="cd-feed-title">{icon} {_esc(nom)}</div>'
+                f'<div class="cd-feed-sub">Retrouvé le {_esc(doc["created_at"])}</div>'
+                f'<span class="cd-chip">{_esc(label)}</span></div></div>',
                 unsafe_allow_html=True,
             )
         with col_btn:
@@ -771,8 +788,8 @@ def screen_declarer_perdu():
                 for match in document_matches:
                     st.markdown(
                         f'<div class="cd-success">'
-                        f"Document retrouvé le {match['created_at']} "
-                        f"(correspondance sur « {match['matched_on']} ») — "
+                        f"Document retrouvé le {_esc(match['created_at'])} "
+                        f"(correspondance sur « {_esc(match['matched_on'])} ») — "
                         f"consultez l'écran « Accueil » pour voir les coordonnées de la personne qui l'a retrouvé."
                         f"</div>",
                         unsafe_allow_html=True,
@@ -899,10 +916,10 @@ def screen_declarer_trouve():
                         if value in (None, "", []):
                             value_html = '<span class="cd-field-missing">non détecté</span>'
                         else:
-                            value_html = str(value)
+                            value_html = _esc(value)
                         rows_html += (
                             f'<div class="cd-field-row">'
-                            f'<span class="cd-field-label">{key.replace("_", " ").capitalize()}</span>'
+                            f'<span class="cd-field-label">{_esc(key.replace("_", " ").capitalize())}</span>'
                             f'<span class="cd-field-value">{value_html}</span>'
                             f"</div>"
                         )
@@ -911,7 +928,7 @@ def screen_declarer_trouve():
 
                 if result["alertes"]:
                     for alert in result["alertes"]:
-                        st.markdown(f'<div class="cd-alert">⚠️ {alert}</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="cd-alert">⚠️ {_esc(alert)}</div>', unsafe_allow_html=True)
                 else:
                     st.markdown('<div class="cd-success">✅ Informations enregistrées avec succès.</div>', unsafe_allow_html=True)
 
@@ -924,10 +941,10 @@ def screen_declarer_trouve():
                         contact = match["contact_telephone"] or match["contact_email"] or "contact non renseigné"
                         st.markdown(
                             f'<div class="cd-success">'
-                            f"Déclaration n°{match['id']} du {match['created_at']} "
-                            f"(déclarant·e : {match['contact_nom'] or 'inconnu'}, "
-                            f"correspondance sur « {match['matched_on']} ») — "
-                            f"à recontacter : <strong>{contact}</strong>"
+                            f"Déclaration n°{match['id']} du {_esc(match['created_at'])} "
+                            f"(déclarant·e : {_esc(match['contact_nom'] or 'inconnu')}, "
+                            f"correspondance sur « {_esc(match['matched_on'])} ») — "
+                            f"à recontacter : <strong>{_esc(contact)}</strong>"
                             f"</div>",
                             unsafe_allow_html=True,
                         )
@@ -998,10 +1015,10 @@ def screen_declarer_trouve():
                         contact = match["contact_telephone"] or match["contact_email"] or "contact non renseigné"
                         st.markdown(
                             f'<div class="cd-success">'
-                            f"Déclaration n°{match['id']} du {match['created_at']} "
-                            f"(déclarant·e : {match['contact_nom'] or 'inconnu'}, "
-                            f"correspondance sur « {match['matched_on']} ») — "
-                            f"à recontacter : <strong>{contact}</strong>"
+                            f"Déclaration n°{match['id']} du {_esc(match['created_at'])} "
+                            f"(déclarant·e : {_esc(match['contact_nom'] or 'inconnu')}, "
+                            f"correspondance sur « {_esc(match['matched_on'])} ») — "
+                            f"à recontacter : <strong>{_esc(contact)}</strong>"
                             f"</div>",
                             unsafe_allow_html=True,
                         )
@@ -1039,15 +1056,15 @@ def screen_detail():
         if value in (None, "", []):
             value_html = '<span class="cd-field-missing">non détecté</span>'
         else:
-            value_html = str(value)
+            value_html = _esc(value)
         rows_html += (
             f'<div class="cd-field-row">'
-            f'<span class="cd-field-label">{key.replace("_", " ").capitalize()}</span>'
+            f'<span class="cd-field-label">{_esc(key.replace("_", " ").capitalize())}</span>'
             f'<span class="cd-field-value">{value_html}</span>'
             f"</div>"
         )
     st.markdown(f'<div style="margin-top:14px;">{rows_html}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="cd-feed-sub" style="margin-top:10px;">Retrouvé le {doc["created_at"]}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="cd-feed-sub" style="margin-top:10px;">Retrouvé le {_esc(doc["created_at"])}</div>', unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="cd-card">', unsafe_allow_html=True)
@@ -1062,7 +1079,7 @@ def screen_detail():
             st.rerun()
     else:
         contact = doc.get("finder_contact") or "Coordonnées non renseignées par la personne qui a retrouvé ce document."
-        st.markdown(f'<div class="cd-success">📞 {contact}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="cd-success">📞 {_esc(contact)}</div>', unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     render_footer()
@@ -1092,11 +1109,11 @@ def screen_mes():
             nom = decl["fields"].get("nom") or "Nom non renseigné"
             statut = "En attente" if decl["statut"] == "en_attente" else decl["statut"]
             st.markdown(
-                f'<div class="cd-card"><div class="cd-feed-title">{icon} {nom}</div>'
-                f'<div class="cd-feed-sub">Déclaré le {decl["created_at"]} — '
-                f'Lieu : {decl.get("lieu_perte") or "non renseigné"}</div>'
-                f'<span class="cd-chip">{label}</span>'
-                f'<span class="cd-chip">{statut}</span></div>',
+                f'<div class="cd-card"><div class="cd-feed-title">{icon} {_esc(nom)}</div>'
+                f'<div class="cd-feed-sub">Déclaré le {_esc(decl["created_at"])} — '
+                f'Lieu : {_esc(decl.get("lieu_perte") or "non renseigné")}</div>'
+                f'<span class="cd-chip">{_esc(label)}</span>'
+                f'<span class="cd-chip">{_esc(statut)}</span></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1116,9 +1133,9 @@ def screen_mes():
             with col_info:
                 st.markdown(
                     f'<div class="cd-card" style="margin-bottom:8px;">'
-                    f'<div class="cd-feed-title">{icon} {nom}</div>'
-                    f'<div class="cd-feed-sub">Retrouvé le {doc["created_at"]}</div>'
-                    f'<span class="cd-chip">{label}</span></div>',
+                    f'<div class="cd-feed-title">{icon} {_esc(nom)}</div>'
+                    f'<div class="cd-feed-sub">Retrouvé le {_esc(doc["created_at"])}</div>'
+                    f'<span class="cd-chip">{_esc(label)}</span></div>',
                     unsafe_allow_html=True,
                 )
             with col_btn:
@@ -1259,8 +1276,8 @@ def screen_admin():
             label = DOC_LABELS.get(doc["type_document"], doc["type_document"])
             nom = doc["fields"].get("nom") or "Nom non renseigné"
             st.markdown(
-                f'<div class="cd-field-row"><span class="cd-field-label">#{doc["id"]} · {label} · {nom}</span>'
-                f'<span class="cd-field-value">{doc["created_at"]}</span></div>',
+                f'<div class="cd-field-row"><span class="cd-field-label">#{doc["id"]} · {_esc(label)} · {_esc(nom)}</span>'
+                f'<span class="cd-field-value">{_esc(doc["created_at"])}</span></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1269,8 +1286,8 @@ def screen_admin():
             label = DOC_LABELS.get(decl["type_document"], decl["type_document"])
             nom = decl["fields"].get("nom") or "Nom non renseigné"
             st.markdown(
-                f'<div class="cd-field-row"><span class="cd-field-label">#{decl["id"]} · {label} · {nom} · {decl["statut"]}</span>'
-                f'<span class="cd-field-value">{decl["created_at"]}</span></div>',
+                f'<div class="cd-field-row"><span class="cd-field-label">#{decl["id"]} · {_esc(label)} · {_esc(nom)} · {_esc(decl["statut"])}</span>'
+                f'<span class="cd-field-value">{_esc(decl["created_at"])}</span></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1278,7 +1295,7 @@ def screen_admin():
         for u in list_all_users():
             role = "🛡️ admin" if u.get("is_admin") else "utilisateur"
             st.markdown(
-                f'<div class="cd-field-row"><span class="cd-field-label">#{u["id"]} · {u["nom"]} · {u["email"]}</span>'
+                f'<div class="cd-field-row"><span class="cd-field-label">#{u["id"]} · {_esc(u["nom"])} · {_esc(u["email"])}</span>'
                 f'<span class="cd-field-value">{role}</span></div>',
                 unsafe_allow_html=True,
             )

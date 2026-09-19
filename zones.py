@@ -19,11 +19,41 @@ la hauteur de l'image APRÈS correction de perspective (voir preprocessing.py)
     réels seront disponibles, en ajustant simplement les 4 chiffres de la zone
     concernée ci-dessous.
 
-À propos de CNI_ANCIEN : le classifieur (classifier.py) ne distingue pas
-l'ancienne carte plastifiée de la carte biométrique actuelle — les deux sont
-classées "CNI". read_zones() essaie donc automatiquement les deux mises en
-page pour ce type de document (voir plus bas) et garde, champ par champ, la
-première lecture non vide.
+Les 5 générations connues de la CNI camerounaise depuis 1980, et leur
+correspondance avec les mises en page ci-dessous :
+  1. Carte bilingue en carton "RÉPUBLIQUE UNIE DU CAMEROUN" (1972-1984) et
+  2. la même en carton "REPUBLIC OF CAMEROON" (1984-1999) : aucune zone
+     dédiée (aucun exemplaire réel disponible, et ces cartes ont largement
+     dépassé leur durée de validité de 10 ans — elles ne circulent plus en
+     pratique aujourd'hui). Le classifieur les reconnaît quand même comme
+     "CNI" via les mots-clés (voir config.py), et l'extraction se rabat
+     automatiquement sur la lecture globale + heuristiques (extractor.py).
+  3. Carte informatisée sur support Teslin (1999/2008-2016, sans puce) et
+  4. carte biométrique à puce Gemalto (2016-2025, "puce et petite photo à
+     gauche") : ce sont probablement "CNI" et "CNI_ANCIEN" ci-dessous (calées
+     sur de vraies photos envoyées en développement, mais sans certitude
+     absolue sur laquelle des deux correspond exactement à laquelle de ces
+     deux générations — les deux mises en page sont essayées automatiquement
+     dans tous les cas, voir plus bas).
+  5. Nouvelle carte biométrique Augentic (déployée depuis février-mars 2025,
+     remplace la carte Gemalto) : AUCUNE zone dédiée pour l'instant — aucun
+     exemplaire réel (photo) de ce nouveau modèle n'a encore été examiné pour
+     calibrer ses zones, et sa mise en page exacte n'est pas documentée
+     publiquement à ce jour. Elle est quand même reconnue comme "CNI" par le
+     classifieur (mots-clés), et l'extraction utilise alors uniquement la
+     lecture globale + heuristiques, exactement comme pour un type de
+     document sans zone définie — donc pas de régression, juste pas encore
+     l'avantage de la lecture par zones. DÈS QU'UNE VRAIE PHOTO DE CETTE
+     CARTE EST DISPONIBLE : ajouter une entrée "CNI_2025" dans FIELD_ZONES
+     ci-dessous (calibrée sur cette photo) et l'ajouter en tête de la liste
+     _LAYOUT_VARIANTS["CNI"] plus bas.
+
+À propos de CNI_ANCIEN : le classifieur (classifier.py) ne distingue pas les
+différentes générations de CNI entre elles — toutes sont classées "CNI".
+read_zones() essaie donc automatiquement toutes les mises en page connues
+pour ce type de document (voir _LAYOUT_VARIANTS plus bas) et garde, champ par
+champ, la première lecture non vide — quelle que soit la génération réelle de
+la carte photographiée.
 
 Ce module ne remplace jamais l'extraction existante (extractor.py) : si une
 zone ne donne rien d'exploitable, l'appelant se rabat sur l'ancienne méthode
